@@ -1,28 +1,41 @@
 {
     "name": "dum-packer",
-    "type": "module",
+    "version": "0.1.0",
+    "author": "brad, seeker",
+    "description": "Simple Pug/Sass/Typescript Packer",
+    "license": "ISC",
+
     "scripts": {
-        "dev": "tsx builder.ts"
+        "dev": "tsx src/index.ts",
+        "build": "tsup"
     },
+
+    "type": "module",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.mjs",
+    "types": "./dist/index.d.ts",
+    "files": [
+        "dist"
+    ],
     "dependencies": {
         "@types/html-minifier-terser": "^7.0.2",
         "html-minifier-terser": "^7.2.0",
+        "jsdom": "^23.0.1",
+        "node-watch": "^0.7.4",
         "pug": "^3.0.2",
-        "socket.io": "^4.7.3",
-        "watcher": "^2.3.0"
+        "sass": "^1.69.5",
+        "socket.io": "^4.7.3"
     },
     "devDependencies": {
         "@types/jsdom": "^21.1.6",
         "@types/node": "^20.10.5",
         "@types/pug": "^2.0.10",
-        "@types/sass": "^1.45.0",
         "@typescript-eslint/parser": "^6.15.0",
         "eslint": "^8.56.0",
         "eslint-plugin-pug": "^1.2.5",
-        "jsdom": "^23.0.1",
         "prettier": "^3.1.1",
-        "sass": "^1.69.5",
         "ts-node": "^10.9.2",
+        "tsup": "^8.0.1",
         "tsx": "^4.7.0",
         "typescript": "^5.3.3"
     }
