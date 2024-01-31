@@ -4,12 +4,10 @@
     "author": "brad, seeker",
     "description": "Simple Pug/Sass/Typescript Packer",
     "license": "ISC",
-
     "scripts": {
         "dev": "tsx src/index.ts",
         "build": "tsup"
     },
-
     "type": "module",
     "main": "./dist/index.cjs",
     "module": "./dist/index.mjs",
@@ -18,22 +16,30 @@
         "dist"
     ],
     "dependencies": {
+        "@types/dependency-tree": "^8.1.1",
         "@types/html-minifier-terser": "^7.0.2",
+        "dependency-tree": "^10.0.9",
         "html-minifier-terser": "^7.2.0",
         "jsdom": "^23.0.1",
+        "mime": "^4.0.1",
         "node-watch": "^0.7.4",
         "pug": "^3.0.2",
         "sass": "^1.69.5",
         "socket.io": "^4.7.3"
     },
     "devDependencies": {
+        "@rushstack/eslint-patch": "^1.7.2",
         "@types/jsdom": "^21.1.6",
         "@types/node": "^20.10.5",
         "@types/pug": "^2.0.10",
-        "@typescript-eslint/parser": "^6.15.0",
+        "@typescript-eslint/eslint-plugin": "^6.19.1",
+        "@typescript-eslint/parser": "^6.19.1",
         "eslint": "^8.56.0",
+        "eslint-config-prettier": "^9.1.0",
+        "eslint-plugin-prettier": "^5.1.3",
         "eslint-plugin-pug": "^1.2.5",
-        "prettier": "^3.1.1",
+        "prettier": "^3.2.4",
+        "prettier-eslint": "^16.3.0",
         "ts-node": "^10.9.2",
         "tsup": "^8.0.1",
         "tsx": "^4.7.0",

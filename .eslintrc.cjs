@@ -1,21 +1,26 @@
 /* eslint-env node */
-require('@rushstack/eslint-patch/modern-module-resolution');
+// require('@rushstack/eslint-patch/modern-module-resolution');
 
 module.exports = {
 	root: true,
 	extends: [
-		// 'plugin:vue/vue3-recommended',
-		// 'plugin:vue-pug/vue3-recommended',
 		'eslint:recommended',
-		'@vue/eslint-config-typescript',
-		'@vue/eslint-config-prettier',
+		'plugin:@typescript-eslint/eslint-recommended',
+		'plugin:@typescript-eslint/recommended',
+		'plugin:prettier/recommended',
 	],
-	parser: 'vue-eslint-parser',
+	parser: '@typescript-eslint/parser',
+	plugins: ['@typescript-eslint'],
 	parserOptions: {
 		ecmaVersion: 'latest',
 	},
 	rules: {
-		// 'prettier/prettier': [
+		'no-unused-vars': 'off',
+		'@typescript-eslint/no-unused-vars': [
+			'error',
+			{ varsIgnorePattern: '^_', argsIgnorePattern: '^_' },
+		],
+		'prettier/prettier': 'warn',
 		// 'off',
 		// {
 		// $schema: "http://json.schemastore.org/prettierrc",
