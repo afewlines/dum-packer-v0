@@ -1,11 +1,18 @@
 {
     "name": "dum-packer",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "author": "brad, seeker",
-    "description": "Simple Pug/Sass/Typescript Packer",
+    "description": "Simple Web Project Packer",
+    "keywords": [
+        "bundler", "modules", "packer", "packing",
+        "web",
+        "html", "pug",
+        "typescript", "ts",
+        "css", "sass", "scss",
+        "hmr", "reload"
+    ],
     "license": "ISC",
     "scripts": {
-        "dev": "tsx src/index.ts",
         "build": "tsup"
     },
     "type": "module",

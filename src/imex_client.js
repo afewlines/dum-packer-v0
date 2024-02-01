@@ -10,9 +10,9 @@ function __dum_import(m, k) {
     if (m in __dum_scope) {
         if (k) {
             if (k in __dum_scope[m]) return __dum_scope[m][k];
-            throw `Cannot import item '${k}' from module '${m}'`;
+            throw `Cannot find item '${k}' in module '${m}'`;
         }
         return __dum_scope[m];
     }
-    throw `Cannot import module '${m}'`;
+    throw `Cannot find module '${m}'`;
 }
