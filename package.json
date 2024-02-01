@@ -3,6 +3,11 @@
     "version": "0.1.1",
     "author": "brad, seeker",
     "description": "Simple Web Project Packer",
+    "homepage": "https://github.com/afewlines/dum-packer#readme",
+    "repository": "github:afewlines/dum-packer",
+    "bugs": {
+        "url": "https://github.com/afewlines/dum-packer/issues"
+    },
     "keywords": [
         "bundler", "modules", "packer", "packing",
         "web",
