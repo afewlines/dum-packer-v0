@@ -198,7 +198,6 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const import_match = IMEX_IMPORT_REGEX.exec(line);
 			const export_match = IMEX_EXPORT_REGEX.exec(line);
 			const bad_match = /^\s*export\s+{\W*}/i.exec(line);
-			// console.log(i, import_match, export_match, bad_match, line);
 
 			if (bad_match) continue;
 			if (import_match && import_match.groups) {
@@ -276,7 +275,6 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			);
 			unresolved.push(...nexistent);
 		}
-		console.log(dep_list, unresolved);
 
 		// const closures = [];
 		const finalized = [];
@@ -348,12 +346,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 							switch (path.extname(style).toLocaleLowerCase()) {
 								case '.sass':
 									opts.syntax = 'indented';
-									console.log('was sass', style, opts);
-
 								// fallthrough
 								case '.scss':
-									console.log('sassing', style, opts);
-
 									res = sass.compileString(res, opts).css.trim();
 									break;
 
