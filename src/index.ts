@@ -11,6 +11,8 @@ import * as sass from 'sass';
 import * as socketio from 'socket.io';
 import ts from 'typescript';
 
+// const mime = 'default' in mime ? mime.default : mime;
+
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 5174;
 
@@ -430,7 +432,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const server = http.createServer((req, res) => {
 				const url = new URL(req.url, `http://${req.headers.host}`);
 
-				const content_type = mime.getType(req.url) || 'text/plain';
+				const content_type =
+					(() => {
+						// i hate you, default imports. you make life worse.
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						if ('default' in mime) return (mime.default as any).getType;
+						return mime.getType;
+					})()(req.url) || 'text/plain';
 				console.log(`REQUEST\t${url.toString()}\t(${content_type})`);
 
 				if (url.pathname == '/') {
