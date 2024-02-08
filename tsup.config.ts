@@ -1,10 +1,18 @@
 import { defineConfig } from 'tsup';
 
-export default defineConfig({
-    entry: ['src/index.ts'],
-    format: ['cjs', 'esm'],
-    dts: true,
-    splitting: false,
-    sourcemap: true,
-    clean: true,
+const config = defineConfig({
+	entry: ['src/index.ts'],
+	publicDir: 'public/',
+
+	target: 'esnext',
+	format: ['cjs', 'esm'],
+
+	cjsInterop: true,
+	clean: true,
+	dts: true,
+	splitting: false,
+	sourcemap: true,
+
+	minify: false,
 });
+export default config;

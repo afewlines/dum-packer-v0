@@ -23,4 +23,7 @@
     "cSpell.enableFiletypes": [
         "markdown"
     ],
+    "[javascript]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
 }

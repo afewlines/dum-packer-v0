@@ -1,17 +1,14 @@
-import fs from 'fs';
-import dt from 'dependency-tree';
+import * as fs from 'fs';
+import * as dt from 'dependency-tree';
 import minify from 'html-minifier-terser';
 import * as jsdom from 'jsdom';
-import mime from 'mime';
 import watch from 'node-watch';
 import * as http from 'node:http';
-import path from 'path';
+import * as path from 'path';
 import * as pug from 'pug';
 import * as sass from 'sass';
 import * as socketio from 'socket.io';
-import ts from 'typescript';
-
-// const mime = 'default' in mime ? mime.default : mime;
+import * as ts from 'typescript';
 
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 5174;
@@ -20,43 +17,11 @@ const IMEX_IMPORT_REGEX =
 	/^\s*import\s+(?:(?:\{(?<named>.+)})|(?:\*\s+as\s+(?<namespace>\w+)))\s+from\s+['"](?<source>.+)['"]\s*;/i;
 const IMEX_EXPORT_REGEX =
 	/^export\s+(?:(?:(?:async)|(?:function)|(?:interface)|(?:class)|(?:enum)|(?:const)|(?:var))\s+)+(?<name>\w+)/i;
-const IMEX_RAW = `
-const __dum_scope = {};
 
-function __dum_export(m, k, value) {
-    if (!(m in __dum_scope)) __dum_scope[m] = {};
-    if (k in __dum_scope[m]) throw \`Exported item '\${k}' in module '\${m}' already exists\`;
-    __dum_scope[m][k] = value;
-}
-
-function __dum_import(m, k) {
-    if (m in __dum_scope) {
-        if (k) {
-            if (k in __dum_scope[m]) return __dum_scope[m][k];
-            throw \`Cannot find item '\${k}' in module '\${m}'\`;
-        }
-        return __dum_scope[m];
-    }
-    throw \`Cannot find module '\${m}'\`;
-}
-`.trim();
-const HOT_RELOAD_RAW = `
-const socket = io('http://$HOST:$PORT');
-const stat = { session: -1, version: -1 };
-
-socket.on('init', (session, version) => {
-    console.log('Connected to HR Server');
-    stat.session = session;
-    stat.version = version;
-    console.log(\`HR#\${stat.session}.\${stat.version}\`);
-});
-
-socket.on('reload', () => window.location.reload());
-
-setInterval(() => {
-    socket.emit('polling', stat.session, stat.version);
-}, 5000);
-`.trim();
+const IMEX_RAW = fs.readFileSync(path.resolve(__dirname, 'imex_client.js'), {}).toString();
+const HOT_RELOAD_RAW = fs
+	.readFileSync(path.resolve(__dirname, 'hot_reload_client.js'), {})
+	.toString();
 
 export interface ScopelessImportMap {
 	[import_name: string]: string;
@@ -121,10 +86,170 @@ class SetList<T> extends Array<T> {
 	}
 }
 
-//
+// general helpers
+/** simple mime type inferrer */
+function dum_mime_type(ext: string): string {
+	switch (ext.toLowerCase()) {
+		case '.epub':
+			return 'application/epub+zip';
+		case '.gz':
+			return 'application/gzip';
+		case '.jar':
+			return 'application/java-archive';
+		case '.json':
+			return 'application/json';
+		case '.jsonld':
+			return 'application/ld+json';
+		case '.doc':
+			return 'application/msword';
+		case '.bin':
+			return 'application/octet-stream';
+		case '.ogx':
+			return 'application/ogg';
+		case '.pdf':
+			return 'application/pdf';
+		case '.rtf':
+			return 'application/rtf';
+		case '.azw':
+			return 'application/vnd.amazon.ebook';
+		case '.mpkg':
+			return 'application/vnd.apple.installer+xml';
+		case '.xul':
+			return 'application/vnd.mozilla.xul+xml';
+		case '.xls':
+			return 'application/vnd.ms-excel';
+		case '.eot':
+			return 'application/vnd.ms-fontobject';
+		case '.ppt':
+			return 'application/vnd.ms-powerpoint';
+		case '.odp':
+			return 'application/vnd.oasis.opendocument.presentation';
+		case '.ods':
+			return 'application/vnd.oasis.opendocument.spreadsheet';
+		case '.odt':
+			return 'application/vnd.oasis.opendocument.text';
+		case '.pptx':
+			return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+		case '.xlsx':
+			return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+		case '.docx':
+			return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+		case '.rar':
+			return 'application/vnd.rar';
+		case '.vsd':
+			return 'application/vnd.visio';
+		case '.7z':
+			return 'application/x-7z-compressed';
+		case '.abw':
+			return 'application/x-abiword';
+		case '.bz':
+			return 'application/x-bzip';
+		case '.bz2':
+			return 'application/x-bzip2';
+		case '.cda':
+			return 'application/x-cdf';
+		case '.csh':
+			return 'application/x-csh';
+		case '.arc':
+			return 'application/x-freearc';
+		case '.php':
+			return 'application/x-httpd-php';
+		case '.sh':
+			return 'application/x-sh';
+		case '.tar':
+			return 'application/x-tar';
+		case '.xhtml':
+			return 'application/xhtml+xml';
+		case '.xml':
+			return 'application/xml';
+		case '.zip':
+			return 'application/zip';
+		case '.aac':
+			return 'audio/aac';
+		case '.mid':
+		case '.midi':
+			return 'audio/midi';
+		case '.mp3':
+			return 'audio/mpeg';
+		case '.oga':
+			return 'audio/ogg';
+		case '.opus':
+			return 'audio/opus';
+		case '.wav':
+			return 'audio/wav';
+		case '.weba':
+			return 'audio/webm';
+		case '.otf':
+			return 'font/otf';
+		case '.ttf':
+			return 'font/ttf';
+		case '.woff':
+			return 'font/woff';
+		case '.woff2':
+			return 'font/woff2';
+		case '.apng':
+			return 'image/apng';
+		case '.avif':
+			return 'image/avif';
+		case '.bmp':
+			return 'image/bmp';
+		case '.gif':
+			return 'image/gif';
+		case '.jpeg':
+		case '.jpg':
+			return 'image/jpeg';
+		case '.png':
+			return 'image/png';
+		case '.svg':
+			return 'image/svg+xml';
+		case '.tif':
+		case '.tiff':
+			return 'image/tiff';
+		case '.ico':
+			return 'image/vnd.microsoft.icon';
+		case '.webp':
+			return 'image/webp';
+		case '.ics':
+			return 'text/calendar';
+		case '.css':
+			return 'text/css';
+		case '.csv':
+			return 'text/csv';
+		case '.htm':
+		case '.html':
+			return 'text/html';
+		case '.js':
+		case '.mjs':
+			return 'text/javascript';
+		case '.3gp':
+			return 'video/3gpp';
+		case '.3g2':
+			return 'video/3gpp2';
+		case '.ts':
+			return 'video/mp2t';
+		case '.txt':
+			return 'text/plain';
+		case '.mp4':
+			return 'video/mp4';
+		case '.mpeg':
+			return 'video/mpeg';
+		case '.ogv':
+			return 'video/ogg';
+		case '.webm':
+			return 'video/webm';
+		case '.avi':
+			return 'video/x-msvideo';
+
+		default:
+			return 'application/octet-stream';
+	}
+}
+/** remove extension from path */
 function strip_ext(target: string): string {
 	return target.replace(/\.[^/.]+$/, '');
 }
+
+// specific helpers
 function dom_prepend_child(parent: HTMLElement, child: HTMLElement): HTMLElement {
 	return parent.insertBefore(child, parent.children[0]);
 }
@@ -174,6 +299,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		const source = fs.readFileSync(source_file, { encoding: 'utf-8' });
 		const ext = path.extname(source_file).toLocaleLowerCase();
 		const name = path.basename(source_file, path.extname(source_file));
+
+		// transpile code
 		let code_js: string = (() => {
 			switch (ext) {
 				case '.ts':
@@ -192,8 +319,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		const source_lines = code_js.split('\n');
 		const import_lines = [];
-		const export_lines = [];
 		const output_lines = [];
+		const export_lines = [];
 
 		for (let i = 0; i < source_lines.length; ++i) {
 			const line = source_lines[i];
@@ -204,6 +331,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			if (bad_match) continue;
 			if (import_match && import_match.groups) {
 				// line is import, figure out import source and add to deps
+
 				let isource: string = import_match.groups.source.trim();
 				if (this.import_map && isource in this.import_map) {
 					// cdn/import map check
@@ -251,7 +379,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		}
 
 		code_js = (output_lines.join('\n') + export_lines.join('\n')).trim();
-		// return code_js.length ? `(()=>{\n${code_js}\n})();` : undefined;
+
 		if (code_js.length) {
 			return `${import_lines.join('\n')}\n(()=>{\n${code_js}\n})();`.trim();
 		} else return undefined;
@@ -278,24 +406,29 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			unresolved.push(...nexistent);
 		}
 
-		// const closures = [];
-		const finalized = [];
-		// for (const code of dep_list.reverse()) {
-		for (const source_file of dep_list) {
+		for (const source_file of dep_list.reverse()) {
 			const code_result = this.translate_code(source_file);
 			if (code_result == undefined) continue;
 
-			// const code_closure = `//${source_file}\n(()=>{\n${code_result}\n})();`;
-			// closures.push(code_closure);
-			finalized.push(`//${source_file}\n${code_result}`);
+			dom_prepend_child(
+				dom.window.document.body,
+				(() => {
+					const bucket = dom.window.document.createElement('script');
+					bucket.id = `dum_code_${source_file}`;
+					bucket.innerHTML = `\n${code_result}\n`;
+					bucket.type = 'module';
+					return bucket;
+				})()
+			);
 		}
+
 		dom_prepend_child(
 			dom.window.document.body,
 			(() => {
 				const bucket = dom.window.document.createElement('script');
-				// bucket.innerHTML = '\n' + closures.join('\n\n').trim() + '\n';
-				bucket.innerHTML = `\n${IMEX_RAW}\n\n${finalized.join('\n\n').trim()}`;
-				bucket.type = 'module';
+				bucket.id = `dum_IMEX`;
+				bucket.innerHTML = `\n${IMEX_RAW}\n`;
+				// bucket.type = 'module';
 				return bucket;
 			})()
 		);
@@ -306,8 +439,9 @@ export class DumPackerProject implements DumPackerProjectOpts {
 				dom.window.document.body,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
+					bucket.id = 'dum_IMPORT_MAP';
 					bucket.type = 'importmap';
-					bucket.innerHTML = `\n${JSON.stringify({ imports: this.import_map }, undefined, '\t')}\n`;
+					bucket.innerHTML = `\n${JSON.stringify({ imports: this.import_map }, undefined, this.build_options.minify ? undefined : 4)}\n`;
 					return bucket;
 				})()
 			);
@@ -315,7 +449,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	}
 
 	public async build(): Promise<string> {
-		console.log(`Building Project '${this.name}'`);
+		console.log(`BUILD START\tProject: '${this.name}'`);
 
 		// create new pseudo-dom from html
 		const dom = new jsdom.JSDOM(
@@ -361,6 +495,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 						// create style bucket, fill
 						const bucket = dom.window.document.createElement('style');
+						bucket.id = `dum_style_${style}`;
 						bucket.innerHTML = `\n${style_string}\n`;
 						return bucket;
 					})()
@@ -373,7 +508,9 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		// do hot reload
 		if (this.build_options?.hot_reload) {
-			dom.window.document.head.appendChild(
+			// get server's socket io
+			dom_append_child(
+				dom.window.document.head,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
 					bucket.src = `http://${this.build_options.hot_reload.hostname}:${this.build_options.hot_reload.port}/socket.io/socket.io.js`;
@@ -381,9 +518,12 @@ export class DumPackerProject implements DumPackerProjectOpts {
 				})()
 			);
 
-			dom.window.document.body.insertBefore(
+			// insert code
+			dom_append_child(
+				dom.window.document.body,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
+					bucket.id = 'dum_HOT_RELOAD';
 					bucket.innerHTML =
 						'\n' +
 						HOT_RELOAD_RAW.replace('$HOST', this.build_options.hot_reload.hostname)
@@ -391,8 +531,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 							.trim() +
 						'\n';
 					return bucket;
-				})(),
-				dom.window.document.body.children[0]
+				})()
 			);
 		}
 
@@ -415,7 +554,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		}
 
 		fs.writeFileSync(html_file, html_string);
-		console.log(`File '${html_file}' Built (${html_string.length / 1024}kb)`);
+		console.log(`BUILD DONE\t'${html_file}' (${html_string.length / 1024}kb)`);
 		return html_string;
 	}
 
@@ -432,31 +571,22 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const server = http.createServer((req, res) => {
 				const url = new URL(req.url, `http://${req.headers.host}`);
 
-				const content_type =
-					(() => {
-						// i hate you, default imports. you make life worse.
-						// eslint-disable-next-line @typescript-eslint/no-explicit-any
-						if ('default' in mime) return (mime.default as any).getType;
-						return mime.getType;
-					})()(req.url) || 'text/plain';
-				console.log(`REQUEST\t${url.toString()}\t(${content_type})`);
+				const target_path =
+					url.pathname == '/' ? `${this.name}.html` : path.join(this.base_dir, req.url);
 
-				if (url.pathname == '/') {
-					res.writeHead(200, { 'Content-Type': 'text/html' });
-					res.end(last_build);
-				} else {
-					const target_path = path.join(this.base_dir, req.url);
-					fs.readFile(target_path, (err, data) => {
-						if (err) {
-							// If the file is not found, send a 404 response
-							res.writeHead(404, { 'Content-Type': 'text/plain' });
-							res.end('File not found');
-						} else {
-							res.writeHead(200, { 'Content-Type': content_type });
-							res.end(data);
-						}
-					});
-				}
+				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
+				fs.readFile(target_path, (err, data) => {
+					if (err) {
+						// If the file is not found, send a 404 response
+						console.log(`SERVER\t${content_type}\t404\t${url.toString()}`);
+						res.writeHead(404, { 'Content-Type': 'text/plain' });
+						res.end('File not found');
+					} else {
+						console.log(`SERVER\t${content_type}\t200\t${url.toString()}`);
+						res.writeHead(200, { 'Content-Type': content_type });
+						res.end(data);
+					}
+				});
 			});
 
 			const ssock = new socketio.Server(server);
@@ -469,7 +599,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			});
 
 			// watcher
-			const _watcher = watch.default(this.base_dir, {}, async () => {
+			const _watcher = watch(this.base_dir, {}, async () => {
 				if (!is_building) {
 					is_building = true;
 					last_build = await this.build();
@@ -478,14 +608,14 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					is_building = false;
 				}
 			});
-			console.log('Watching...');
+			console.log(`WATCH\t${this.base_dir}`);
 
 			server.listen(
 				this.build_options.hot_reload.port,
 				this.build_options.hot_reload.hostname,
 				() => {
 					console.log(
-						`Server running at http://${this.build_options.hot_reload.hostname}:${this.build_options.hot_reload.port}/\n`
+						`\nServer running at http://${this.build_options.hot_reload.hostname}:${this.build_options.hot_reload.port}/\n`
 					);
 				}
 			);
