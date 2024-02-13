@@ -1,20 +1,21 @@
 import * as fs from 'fs';
 import * as dt from 'dependency-tree';
-import minify from 'html-minifier-terser';
+import * as minify from 'html-minifier-terser';
 import * as jsdom from 'jsdom';
-import watch from 'node-watch';
 import * as http from 'node:http';
 import * as path from 'path';
 import * as pug from 'pug';
 import * as sass from 'sass';
 import * as socketio from 'socket.io';
 import * as ts from 'typescript';
+import * as prettier from 'prettier';
+import watch from 'node-watch';
 
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 5174;
 
 const IMEX_IMPORT_REGEX =
-	/^\s*import\s+(?:(?:\{(?<named>.+)})|(?:\*\s+as\s+(?<namespace>\w+)))\s+from\s+['"](?<source>.+)['"]\s*;/i;
+	/^\s*import\s+(?:(?:\{(?<named>.+)})|(?:\*\s+as\s+(?<namespace>\w+)))\s+from\s+['"]\s*(?<source>.+)\s*['"]\s*;/i;
 const IMEX_EXPORT_REGEX =
 	/^export\s+(?:(?:(?:async)|(?:function)|(?:interface)|(?:class)|(?:enum)|(?:const)|(?:var))\s+)+(?<name>\w+)/i;
 
@@ -23,17 +24,34 @@ const HOT_RELOAD_RAW = fs
 	.readFileSync(path.resolve(__dirname, 'hot_reload_client.js'), {})
 	.toString();
 
+interface ServerState {
+	server: http.Server;
+	ssock?: socketio.Server;
+	hr_state?: {
+		session: number;
+		version: number;
+	};
+}
 export interface ScopelessImportMap {
 	[import_name: string]: string;
 }
 export interface DumPackerBuildOpts {
-	/** should project be minified */
-	minify?: boolean;
+	/** should minify / 'minify' options */
+	minify?: minify.Options;
+	/** should beautify / 'prettier' options */
+	beautify?: prettier.Options;
 
-	/** hot reload/watch leave empty to disable */
-	hot_reload?: {
-		hostname?: string;
-		port?: number;
+	/** watcher, will build projects on file change if not undefined */
+	watcher?: {
+		watcher_dir?: string; // directory to watch. default: project.base_dir
+	};
+
+	/** local server, will run server if not undefined*/
+	server?: {
+		hostname?: string; // default: localhost
+		port?: number; // default: 5174
+		server_dir?: string; // directory to serve. default: project.base_dir
+		hot_reload?: boolean; // should hot reload when watcher issues new build
 	};
 }
 export interface DumPackerProjectOpts {
@@ -45,7 +63,7 @@ export interface DumPackerProjectOpts {
 	/** target page template
 	 * [.pug, .html]
 	 */
-	template: string;
+	page: string;
 	/** target style sheet(s)
 	 * [.scss, .sass, .css]
 	 */
@@ -54,7 +72,6 @@ export interface DumPackerProjectOpts {
 	 * [.ts, .js]
 	 */
 	code?: string | string[];
-
 	/** import map */
 	import_map?: ScopelessImportMap;
 
@@ -244,9 +261,16 @@ function dum_mime_type(ext: string): string {
 			return 'application/octet-stream';
 	}
 }
-/** remove extension from path */
-function strip_ext(target: string): string {
-	return target.replace(/\.[^/.]+$/, '');
+/**get module source relative to base dir
+ * @param base_dir string/path: base directory of project
+ * @param requester string/path: source file that is importing/exporting
+ * @param module_source string/path: normalized path to module from source file
+ * @returns string: module path relative to base dir, '/' path separators, no file extension
+ */
+function clean_module_source(base_dir: string, requester: string, module_source: string): string {
+	return path
+		.relative(base_dir, path.join(path.dirname(requester), module_source).replace(/\.[^/.]+$/, ''))
+		.replaceAll(path.win32.sep, '/');
 }
 
 // specific helpers
@@ -261,51 +285,114 @@ function dom_append_child(parent: HTMLElement, child: HTMLElement): HTMLElement 
 export class DumPackerProject implements DumPackerProjectOpts {
 	name: string;
 	base_dir: string;
-	template: string;
+
+	page: string;
 	style?: string[];
 	code?: string[];
 	import_map?: ScopelessImportMap;
-	build_options?: DumPackerBuildOpts;
+
+	build_options: DumPackerBuildOpts;
 	constructor(opts: DumPackerProjectOpts) {
 		this.base_dir = path.relative('.', opts.base_dir);
 		this.name = opts.name;
-		this.template = path.relative('.', opts.template);
+		this.page = opts.page;
 
 		this.style = typeof opts.style === 'string' ? [opts.style] : opts.style;
-		if (this.style) {
-			this.style.reverse();
-			this.style = this.style.map((s) => path.relative('.', s));
-		}
+		this.style?.reverse();
 
 		this.code = typeof opts.code === 'string' ? [opts.code] : opts.code;
-		if (this.code) {
-			this.code.reverse();
-			this.code = this.code.map((c) => path.relative('.', c));
-		}
+		this.code?.reverse();
 
 		this.import_map = opts.import_map;
 
 		this.build_options = Object.assign({}, opts.build_options);
-		if (this.build_options.hot_reload) {
-			this.build_options.hot_reload = Object.assign(
-				{ hostname: DEFAULT_HOST, port: DEFAULT_PORT },
-				this.build_options.hot_reload
+		if (this.build_options.server) {
+			this.build_options.server = Object.assign(
+				{ server_dir: this.base_dir, hostname: DEFAULT_HOST, port: DEFAULT_PORT },
+				this.build_options.server
+			);
+		}
+		if (this.build_options.watcher) {
+			this.build_options.watcher = Object.assign(
+				{ watcher_dir: this.base_dir },
+				this.build_options.watcher
 			);
 		}
 	}
 
+	// template
+	private process_template() {
+		const raw = fs.readFileSync(this.page, { encoding: 'utf-8' });
+		switch (path.extname(this.page).toLowerCase()) {
+			case '.pug':
+				return pug
+					.compile(raw, {
+						pretty: true,
+					})()
+					.replace(new RegExp(/\t/g), '');
+
+			case '.html':
+			default:
+				return raw;
+		}
+	}
+
+	// style
+	private process_style(dom: jsdom.JSDOM) {
+		for (const style of this.style) {
+			// append style bucket to head
+			dom_append_child(
+				dom.window.document.head,
+				(() => {
+					// read scss/sass, compile
+					const style_string = (() => {
+						let res = fs.readFileSync(style, { encoding: 'utf-8' });
+						const opts: sass.StringOptions<'sync'> = {
+							style: this.build_options.minify ? 'compressed' : 'expanded',
+							syntax: 'scss',
+						};
+						switch (path.extname(style).toLocaleLowerCase()) {
+							case '.sass':
+								opts.syntax = 'indented';
+							// fallthrough
+							case '.scss':
+								res = sass.compileString(res, opts).css.trim();
+								break;
+
+							default:
+								break;
+						}
+						return res.trim();
+					})();
+
+					// create style bucket, fill
+					const bucket = dom.window.document.createElement('style');
+					bucket.id = `dum_style_${style}`;
+					bucket.innerHTML = `\n${style_string}\n`;
+					return bucket;
+				})()
+			);
+		}
+	}
+
+	// code
 	private translate_code(source_file: string): string | undefined {
-		source_file = path.join(this.base_dir, source_file);
-		const source = fs.readFileSync(source_file, { encoding: 'utf-8' });
-		const ext = path.extname(source_file).toLocaleLowerCase();
-		const name = path.basename(source_file, path.extname(source_file));
+		// get source file as path and module name
+		source_file = path.normalize(source_file);
+		const export_module = clean_module_source(
+			this.base_dir,
+			source_file,
+			path.basename(source_file)
+		);
 
 		// transpile code
 		let code_js: string = (() => {
+			const raw = fs.readFileSync(source_file, { encoding: 'utf-8' });
+			const ext = path.extname(source_file).toLocaleLowerCase();
 			switch (ext) {
 				case '.ts':
-					return ts.transpileModule(source, {
-						moduleName: name,
+					return ts.transpileModule(raw, {
+						moduleName: path.basename(export_module),
 						compilerOptions: {
 							target: ts.ScriptTarget.ESNext,
 							module: ts.ModuleKind.ESNext,
@@ -313,74 +400,88 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					}).outputText;
 
 				default:
-					return source;
+					return raw;
 			}
 		})();
 
+		// loop through lines to find import/exports
 		const source_lines = code_js.split('\n');
 		const import_lines = [];
 		const output_lines = [];
 		const export_lines = [];
 
 		for (let i = 0; i < source_lines.length; ++i) {
-			const line = source_lines[i];
-			const import_match = IMEX_IMPORT_REGEX.exec(line);
-			const export_match = IMEX_EXPORT_REGEX.exec(line);
+			const line = source_lines[i].trim();
+
 			const bad_match = /^\s*export\s+{\W*}/i.exec(line);
-
+			// ignore 'export {stuff}' form
+			// TODO: allow for this if i find the desire/need
 			if (bad_match) continue;
-			if (import_match && import_match.groups) {
-				// line is import, figure out import source and add to deps
 
-				let isource: string = import_match.groups.source.trim();
-				if (this.import_map && isource in this.import_map) {
-					// cdn/import map check
+			// do imports
+			const import_match = IMEX_IMPORT_REGEX.exec(line);
+			if (import_match && import_match.groups) {
+				// if it's in the import map, ignore
+				output_lines.push(`// ${line.trim()}`);
+				if (this.import_map && import_match.groups.source in this.import_map) {
 					import_lines.push(line);
 					continue;
 				}
 
-				if (isource.startsWith('.')) isource = path.dirname(source_file) + isource.slice(1);
-				isource = strip_ext(path.relative(this.base_dir, isource));
-				if (isource.length < 1) {
-					console.warn(`Bad source: [${i}] '${line}'`);
-					continue;
-				}
+				const import_module: string = clean_module_source(
+					this.base_dir,
+					source_file,
+					path.normalize(import_match.groups.source)
+				);
 
 				if (import_match.groups.namespace) {
+					// namespace import
 					// import * as example from 'example.ts'
-					const ns = import_match.groups.namespace.trim();
-					const reline = `const ${ns} = __dum_import('${isource}');`;
-					output_lines.push(reline);
+					const imported_namespace = import_match.groups.namespace.trim();
+					output_lines.push(`const ${imported_namespace} = __dum_import('${import_module}');`);
 				} else if (import_match.groups.named) {
+					// named imports
 					// import {test1, test2 as other_test} from 'example.ts'
 					for (const named of import_match.groups.named.trim().split(',')) {
-						const t = named.trim();
-						const as_match = /(?<key>\S*)\s+as\s+(?<tform>\S*)/i.exec(t);
-						let reline: string;
-						if (as_match && as_match.groups) {
-							reline = `const ${as_match.groups.tform} = __dum_import('${isource}', '${as_match.groups.key}');`;
-						} else {
-							reline = `const ${t} = __dum_import('${isource}', '${t}');`;
-						}
-						output_lines.push(reline);
+						const imported_name = named.trim();
+						output_lines.push(
+							(() => {
+								const as_match = /(?<key>\S*)\s+as\s+(?<tform>\S*)/i.exec(imported_name);
+								const target_name: string = as_match ? as_match.groups.tform : imported_name,
+									item_name: string = as_match ? as_match.groups.key : imported_name;
+								return `const ${target_name.trim()} = __dum_import('${import_module}', '${item_name.trim()}');`;
+							})()
+						);
 					}
 				}
-			} else if (export_match && export_match.groups) {
-				// aaaaand exports
-				const ne = export_match.groups.name.trim();
-				const ename = strip_ext(path.relative(this.base_dir, source_file));
-				const nline = `__dum_export('${ename}', '${ne}', ${ne});`;
-				export_lines.push(nline);
-
-				output_lines.push(line.replace(/^\s*export\s+/i, ''));
-			} else {
-				output_lines.push(line);
+				continue; // line done
 			}
+
+			// aaaaand exports
+			const export_match = IMEX_EXPORT_REGEX.exec(line);
+			if (export_match && export_match.groups) {
+				output_lines.push(`// ${line.trim()}`);
+
+				const ne = export_match.groups.name.trim();
+				const nline = `__dum_export('${export_module}', '${ne}', ${ne});`;
+				export_lines.push(nline);
+				output_lines.push(line.replace(/^\s*export\s+/i, ''));
+
+				continue; // line done
+			}
+
+			// anything else, just push line
+			output_lines.push(line);
 		}
 
+		// concat actual code and exports
 		code_js = (output_lines.join('\n') + export_lines.join('\n')).trim();
 
+		// if there was no actual code or actual export (eg: .ts files only exporting types),
+		// skip the file
 		if (code_js.length) {
+			// TODO: closure option
+			// concat import_map imports to code
 			return `${import_lines.join('\n')}\n(()=>{\n${code_js}\n})();`.trim();
 		} else return undefined;
 	}
@@ -389,32 +490,34 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		// find dependencies list
 		const dep_list = new SetList<string>();
-		const unresolved = new SetList<string>();
+		// const unresolved = new SetList<string>();
 		for (const entry_point of this.code) {
-			const nexistent = [];
+			// const nexistent = [];
 			dep_list.push(
-				...dt
-					.toList({
-						directory: this.base_dir,
-						filename: path.join(this.base_dir, entry_point),
-						noTypeDefinitions: true,
-						nonExistent: nexistent,
-						filter: (path) => path.indexOf('node_modules') === -1,
-					})
-					.map((v) => path.relative(this.base_dir, v))
+				...dt.toList({
+					directory: this.base_dir,
+					filename: entry_point,
+					noTypeDefinitions: true,
+					// nonExistent: nexistent,
+					filter: (path) => path.indexOf('node_modules') === -1,
+				})
 			);
-			unresolved.push(...nexistent);
+			// unresolved.push(...nexistent);
 		}
 
+		// process and add code, starting at last dependency
 		for (const source_file of dep_list.reverse()) {
+			// translate the code
 			const code_result = this.translate_code(source_file);
+			// if skippable (.ts files only exporting types)
 			if (code_result == undefined) continue;
 
+			// add modularized code to dom
 			dom_prepend_child(
 				dom.window.document.body,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.id = `dum_code_${source_file}`;
+					bucket.id = `dum_code-${clean_module_source(this.base_dir, '', source_file)}`;
 					bucket.innerHTML = `\n${code_result}\n`;
 					bucket.type = 'module';
 					return bucket;
@@ -422,6 +525,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			);
 		}
 
+		// add dum module (IMEX) code to dom
 		dom_prepend_child(
 			dom.window.document.body,
 			(() => {
@@ -433,7 +537,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			})()
 		);
 
-		// import map
+		// add import map to dom
 		if (this.import_map) {
 			dom_prepend_child(
 				dom.window.document.body,
@@ -449,71 +553,21 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	}
 
 	public async build(): Promise<string> {
-		console.log(`BUILD START\tProject: '${this.name}'`);
+		console.log(`BUILD\tstarting\t'${this.name}'`);
 
 		// create new pseudo-dom from html
-		const dom = new jsdom.JSDOM(
-			(() => {
-				const raw = fs.readFileSync(path.join(this.base_dir, this.template), { encoding: 'utf-8' });
-				if (path.extname(this.template).toLowerCase() == '.pug') {
-					return pug
-						.compile(raw, {
-							pretty: true,
-						})()
-						.replace(new RegExp(/\t/g), '');
-				} else return raw;
-			})()
-		);
-
-		// do styles
-		if (this.style) {
-			for (const style of this.style) {
-				// append style bucket to head
-				dom_append_child(
-					dom.window.document.head,
-					(() => {
-						// read scss/sass, compile
-						const style_string = (() => {
-							let res = fs.readFileSync(path.join(this.base_dir, style), { encoding: 'utf-8' });
-							const opts: sass.StringOptions<'sync'> = {
-								style: this.build_options.minify ? 'compressed' : 'expanded',
-								syntax: 'scss',
-							};
-							switch (path.extname(style).toLocaleLowerCase()) {
-								case '.sass':
-									opts.syntax = 'indented';
-								// fallthrough
-								case '.scss':
-									res = sass.compileString(res, opts).css.trim();
-									break;
-
-								default:
-									break;
-							}
-							return res.trim();
-						})();
-
-						// create style bucket, fill
-						const bucket = dom.window.document.createElement('style');
-						bucket.id = `dum_style_${style}`;
-						bucket.innerHTML = `\n${style_string}\n`;
-						return bucket;
-					})()
-				);
-			}
-		}
-
-		// do code
-		this.process_code(dom);
+		const dom = new jsdom.JSDOM(this.process_template());
+		if (this.style) this.process_style(dom);
+		if (this.code) this.process_code(dom);
 
 		// do hot reload
-		if (this.build_options?.hot_reload) {
+		if (this.build_options?.server?.hot_reload) {
 			// get server's socket io
 			dom_append_child(
 				dom.window.document.head,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.src = `http://${this.build_options.hot_reload.hostname}:${this.build_options.hot_reload.port}/socket.io/socket.io.js`;
+					bucket.src = `http://${this.build_options.server.hostname}:${this.build_options.server.port}/socket.io/socket.io.js`;
 					return bucket;
 				})()
 			);
@@ -526,8 +580,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					bucket.id = 'dum_HOT_RELOAD';
 					bucket.innerHTML =
 						'\n' +
-						HOT_RELOAD_RAW.replace('$HOST', this.build_options.hot_reload.hostname)
-							.replace('$PORT', `${this.build_options.hot_reload.port}`)
+						HOT_RELOAD_RAW.replace('$HOST', this.build_options.server.hostname)
+							.replace('$PORT', `${this.build_options.server.port}`)
 							.trim() +
 						'\n';
 					return bucket;
@@ -539,86 +593,142 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		let html_string = dom.serialize();
 		const html_file = `${this.name}.html`;
 
-		// minimize
-		if (this.build_options?.minify) {
-			html_string = await minify.minify(html_string, {
-				removeComments: true,
-				collapseBooleanAttributes: true,
-				collapseWhitespace: true,
-				collapseInlineTagWhitespace: true,
-				minifyCSS: true,
-				minifyJS: true,
-				noNewlinesBeforeTagClose: true,
-				sortAttributes: true,
-			});
+		// minimize or beautify
+		if (this.build_options.minify) {
+			html_string = await minify.minify(
+				html_string,
+				Object.assign(
+					{
+						removeComments: true,
+						collapseBooleanAttributes: true,
+						collapseWhitespace: true,
+						collapseInlineTagWhitespace: true,
+						minifyCSS: true,
+						minifyJS: true,
+						noNewlinesBeforeTagClose: true,
+						sortAttributes: true,
+					},
+					this.build_options.minify
+				)
+			);
+		} else if (this.build_options.beautify) {
+			html_string = await prettier.format(
+				html_string,
+				Object.assign(
+					{
+						parser: 'html',
+
+						arrowParens: 'always',
+						bracketSameLine: true,
+						bracketSpacing: true,
+						embeddedLanguageFormatting: 'auto',
+						endOfLine: 'lf',
+						printWidth: 120,
+						quoteProps: 'consistent',
+						semi: true,
+						singleAttributePerLine: true,
+						singleQuote: true,
+						trailingComma: 'es5',
+						tabWidth: 2,
+						useTabs: true,
+					},
+					this.build_options.beautify
+				)
+			);
 		}
 
 		fs.writeFileSync(html_file, html_string);
-		console.log(`BUILD DONE\t'${html_file}' (${html_string.length / 1024}kb)`);
+		console.log(`BUILD\tsucceeded\t'${html_file}'\t${html_string.length / 1024}kb`);
 		return html_string;
 	}
 
 	async run() {
 		let last_build = await this.build();
-		if (this.build_options?.hot_reload) {
-			let is_building: boolean = false;
-			const stat = {
-				session: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-				version: 0,
-			};
+		let is_building: boolean = false;
 
-			// server
-			const server = http.createServer((req, res) => {
-				const url = new URL(req.url, `http://${req.headers.host}`);
-
-				const target_path =
-					url.pathname == '/' ? `${this.name}.html` : path.join(this.base_dir, req.url);
-
-				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
-				fs.readFile(target_path, (err, data) => {
-					if (err) {
-						// If the file is not found, send a 404 response
-						console.log(`SERVER\t${content_type}\t404\t${url.toString()}`);
-						res.writeHead(404, { 'Content-Type': 'text/plain' });
-						res.end('File not found');
-					} else {
-						console.log(`SERVER\t${content_type}\t200\t${url.toString()}`);
-						res.writeHead(200, { 'Content-Type': content_type });
-						res.end(data);
-					}
-				});
-			});
-
-			const ssock = new socketio.Server(server);
-			ssock.on('connection', (sock) => {
-				sock.on('polling', (session, version) => {
-					if (!(session == stat.session && version == stat.version)) sock.emit('reload');
-				});
-
-				sock.emit('init', stat.session, stat.version);
-			});
-
-			// watcher
-			const _watcher = watch(this.base_dir, {}, async () => {
+		const init_watcher = (serv?: ServerState) => {
+			const watcher = watch(this.base_dir, {}, async () => {
 				if (!is_building) {
 					is_building = true;
 					last_build = await this.build();
-					stat.version += 1;
-					ssock.emit('reload');
+					if (serv && this.build_options.server.hot_reload) {
+						serv.hr_state.version += 1;
+						serv.ssock.emit('reload');
+					}
 					is_building = false;
 				}
 			});
-			console.log(`WATCH\t${this.base_dir}`);
+			console.log(`WATCH\t${path.resolve(__dirname, this.base_dir)}`);
+			return watcher;
+		};
 
-			server.listen(
-				this.build_options.hot_reload.port,
-				this.build_options.hot_reload.hostname,
-				() => {
-					console.log(
-						`\nServer running at http://${this.build_options.hot_reload.hostname}:${this.build_options.hot_reload.port}/\n`
+		// server
+		const server_state: ServerState | undefined = this.build_options?.server
+			? (() => {
+					// server state
+					const local_state: ServerState = {
+						server: http.createServer((req, res) => {
+							const url = new URL(req.url, `http://${req.headers.host}`);
+
+							const target_path =
+								url.pathname == '/' ? `${this.name}.html` : path.join(this.base_dir, req.url);
+
+							const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
+							fs.readFile(target_path, (err, data) => {
+								if (err) {
+									// If the file is not found, send a 404 response
+									console.log(`SERVE\t${content_type}\t404\t${url.toString()}`);
+									res.writeHead(404, { 'Content-Type': 'text/plain' });
+									res.end('File not found');
+								} else {
+									console.log(`SERVE\t${content_type}\t200\t${url.toString()}`);
+									res.writeHead(200, { 'Content-Type': content_type });
+									res.end(data);
+								}
+							});
+						}),
+					};
+
+					if (this.build_options.server.hot_reload) {
+						local_state.hr_state = {
+							session: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+							version: 0,
+						};
+
+						local_state.ssock = new socketio.Server(local_state.server);
+						local_state.ssock.on('connection', (sock) => {
+							sock.on('polling', (session, version) => {
+								if (
+									!(
+										session == local_state.hr_state.session &&
+										version == local_state.hr_state.version
+									)
+								)
+									sock.emit('reload');
+							});
+
+							sock.emit('init', local_state.hr_state.session, local_state.hr_state.version);
+						});
+					}
+
+					// server listen
+					local_state.server.listen(
+						this.build_options.server.port,
+						this.build_options.server.hostname,
+						() => {
+							console.log(
+								`SERVE\thttp://${this.build_options.server.hostname}:${this.build_options.server.port}/\n`
+							);
+						}
 					);
-				}
-			);
+					return local_state;
+				})()
+			: undefined;
+
+		// watcher w/ no state
+		if (this.build_options?.watcher) {
+			init_watcher(server_state);
+			console.log(`HR\t${this.build_options?.server?.hot_reload ? 'enabled' : 'disabled'}`);
 		}
 
 		return last_build;

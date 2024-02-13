@@ -8,7 +8,7 @@ This package is designed to bundle parts of a web-based project into a single ht
 
 - Single file output
 - Automatic translation to html/css/js
-- Minification
+- Minification & formatting/beautifier
 - Development server/hot reload
 
 ## Supported Languages
@@ -56,42 +56,53 @@ main.js
 import { DumPackerProject } from 'dum-packer';
 
 const project = new DumPackerProject({
-	// project name/output file, required
+	// required; project/output file name
 	name: 'dum-packer-example',
 
-	// base for project's files, required
-	// referenced files should be relative to this directory
-	base_dir: './src',
+	// required; base for project's files
+	// used as base path for modules
+	base_dir: 'src/',
 
-	// single file, required
-	template: './index.pug',
-	// single file or array, optional
-	style: './style.scss',
-	// single file or array, optional
-	code: ['./index.ts'],
+	// required; single file
+	page: 'src/index.pug',
+	// optional; single file or array
+	style: 'src/style.scss',
+	// optional; single file or array
+	code: ['src/index.ts'],
 
-	// importmap w/o option for scopes, optional
+	// optional; html import map script type w/o scopes
 	import_map: {
 		package: 'CDN url',
 	},
 
 	build_options: {
-		// boolean, optional
-		minify: true,
-		// optional; any value besides undefined will serve
-		hot_reload: {
-			hostname: 'localhost', // default: localhost, optional
-			port: 5888, // default: 5173, optional
+		// optional; minify.Options, minifies when not undefined
+		minify: {},
+		// optional; prettier.Options, beautifies when not undefined & not minified
+		beautify: {},
+
+		// optional; any value besides undefined will watch for file changes, rebuild when triggered
+		watcher: {
+			watcher_dir: 'src/', // optional; directory to watch. default: project.base_dir
+		},
+
+		// optional; any value besides undefined will serve project
+		server: {
+			hostname: 'localhost', // optional. default: localhost
+			port: 5888, // optional. default: 5174
+			server_dir: 'src/', // optional; directory to serve. default: project.base_dir
+			hot_reload: true, // optional; enable hot reload, requires watcher to be started
 		},
 	},
 });
 
-// just build the output file (async)
-project.build();
-
-// build project & serve if hot_reload is not undefined
-// otherwise, just builds synchronously
+// builds project, starts watcher/server
+// if neither set, just build synchronously
 project.run();
+
+// to just build project (async)
+// note that build options will be respected; if set to hot reload, related code will be inserted, but the watcher/server will not be run
+project.build();
 
 // output: root_dir/dum-packer-example.html
 ```
@@ -107,7 +118,7 @@ Things that are likely:
 - Option to disable dum_module system and/or closures
   - Former will probably just be based on if it's needed or not
 - Option to determine where built project file goes (it doesn't feel necessary; this packer is dumb)
-- More options for minification, server, etc
+- More options for ~~minification, server,~~ other obfuscated elements
 
 Things that are less likely, but not unlikely:
 
