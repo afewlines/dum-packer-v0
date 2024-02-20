@@ -413,10 +413,18 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		for (let i = 0; i < source_lines.length; ++i) {
 			const line = source_lines[i].trim();
 
-			const bad_match = /^\s*export\s+{\W*}/i.exec(line);
+			// const bad_match = /^\s*export\s+{\W*}/i.exec(line);
 			// ignore 'export {stuff}' form
+			// ignore __dum_omit lines
 			// TODO: allow for this if i find the desire/need
-			if (bad_match) continue;
+			// TODO: document omit/ignore
+			if (/^\s*export\s+{\W*}/i.exec(line) || /__dum_omit/.exec(line)) continue;
+
+			// don't touch __dum_ignore lines
+			if (/__dum_ignore/.exec(line)) {
+				output_lines.push(line);
+				continue;
+			}
 
 			// do imports
 			const import_match = IMEX_IMPORT_REGEX.exec(line);
@@ -486,7 +494,33 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		} else return undefined;
 	}
 	private process_code(dom: jsdom.JSDOM) {
+		// add import map to dom
+		if (this.import_map) {
+			dom_append_child(
+				dom.window.document.body,
+				(() => {
+					const bucket = dom.window.document.createElement('script');
+					bucket.id = 'dum_IMPORT_MAP';
+					bucket.type = 'importmap';
+					bucket.innerHTML = `\n${JSON.stringify({ imports: this.import_map }, undefined, this.build_options.minify ? undefined : 4)}\n`;
+					return bucket;
+				})()
+			);
+		}
+
 		if (this.code == undefined) return;
+
+		// add dum module (IMEX) code to dom
+		dom_append_child(
+			dom.window.document.body,
+			(() => {
+				const bucket = dom.window.document.createElement('script');
+				bucket.id = `dum_IMEX`;
+				bucket.innerHTML = `\n${IMEX_RAW}\n`;
+				// bucket.type = 'module';
+				return bucket;
+			})()
+		);
 
 		// find dependencies list
 		const dep_list = new SetList<string>();
@@ -506,46 +540,21 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		}
 
 		// process and add code, starting at last dependency
-		for (const source_file of dep_list.reverse()) {
+		for (const source_file of dep_list) {
 			// translate the code
 			const code_result = this.translate_code(source_file);
 			// if skippable (.ts files only exporting types)
 			if (code_result == undefined) continue;
 
 			// add modularized code to dom
-			dom_prepend_child(
+			// dom_prepend_child(
+			dom_append_child(
 				dom.window.document.body,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
 					bucket.id = `dum_code-${clean_module_source(this.base_dir, '', source_file)}`;
 					bucket.innerHTML = `\n${code_result}\n`;
 					bucket.type = 'module';
-					return bucket;
-				})()
-			);
-		}
-
-		// add dum module (IMEX) code to dom
-		dom_prepend_child(
-			dom.window.document.body,
-			(() => {
-				const bucket = dom.window.document.createElement('script');
-				bucket.id = `dum_IMEX`;
-				bucket.innerHTML = `\n${IMEX_RAW}\n`;
-				// bucket.type = 'module';
-				return bucket;
-			})()
-		);
-
-		// add import map to dom
-		if (this.import_map) {
-			dom_prepend_child(
-				dom.window.document.body,
-				(() => {
-					const bucket = dom.window.document.createElement('script');
-					bucket.id = 'dum_IMPORT_MAP';
-					bucket.type = 'importmap';
-					bucket.innerHTML = `\n${JSON.stringify({ imports: this.import_map }, undefined, this.build_options.minify ? undefined : 4)}\n`;
 					return bucket;
 				})()
 			);
@@ -573,7 +582,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			);
 
 			// insert code
-			dom_append_child(
+			dom_prepend_child(
 				dom.window.document.body,
 				(() => {
 					const bucket = dom.window.document.createElement('script');
@@ -647,7 +656,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		let is_building: boolean = false;
 
 		const init_watcher = (serv?: ServerState) => {
-			const watcher = watch(this.base_dir, {}, async () => {
+			const watcher = watch(this.base_dir, { recursive: true }, async () => {
 				if (!is_building) {
 					is_building = true;
 					last_build = await this.build();
@@ -671,7 +680,9 @@ export class DumPackerProject implements DumPackerProjectOpts {
 							const url = new URL(req.url, `http://${req.headers.host}`);
 
 							const target_path =
-								url.pathname == '/' ? `${this.name}.html` : path.join(this.base_dir, req.url);
+								url.pathname == '/'
+									? `${this.name}.html`
+									: path.join(this.build_options.server.server_dir, req.url);
 
 							const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
 							fs.readFile(target_path, (err, data) => {
