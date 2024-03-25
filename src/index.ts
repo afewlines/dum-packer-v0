@@ -452,6 +452,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					// import {test1, test2 as other_test} from 'example.ts'
 					for (const named of import_match.groups.named.trim().split(',')) {
 						const imported_name = named.trim();
+						if (imported_name.length < 1) continue;
 						output_lines.push(
 							(() => {
 								const as_match = /(?<key>\S*)\s+as\s+(?<tform>\S*)/i.exec(imported_name);
