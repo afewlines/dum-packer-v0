@@ -14,11 +14,6 @@ import watch from 'node-watch';
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 5174;
 
-const IMEX_IMPORT_REGEX =
-	/^\s*import\s+(?:(?:\{(?<named>.+)})|(?:\*\s+as\s+(?<namespace>\w+)))\s+from\s+['"]\s*(?<source>.+)\s*['"]\s*;/i;
-const IMEX_EXPORT_REGEX =
-	/^export\s+(?:(?:(?:async)|(?:function)|(?:interface)|(?:class)|(?:enum)|(?:const)|(?:var))\s+)+(?<name>\w+)/i;
-
 const IMEX_RAW = fs.readFileSync(path.resolve(__dirname, 'imex_client.js'), {}).toString();
 const HOT_RELOAD_RAW = fs
 	.readFileSync(path.resolve(__dirname, 'hot_reload_client.js'), {})
@@ -268,9 +263,12 @@ function dum_mime_type(ext: string): string {
  * @returns string: module path relative to base dir, '/' path separators, no file extension
  */
 function clean_module_source(base_dir: string, requester: string, module_source: string): string {
-	return path
-		.relative(base_dir, path.join(path.dirname(requester), module_source).replace(/\.[^/.]+$/, ''))
-		.replaceAll(path.win32.sep, '/');
+	let new_path = path.resolve(path.dirname(requester), module_source).replace(/\.[^/.]+$/, '');
+	new_path = path.relative(base_dir, new_path);
+	if (path.basename(new_path).toLowerCase() == 'index') new_path = path.dirname(new_path);
+	new_path = new_path.replaceAll(path.win32.sep, '/');
+
+	return new_path;
 }
 
 // specific helpers
@@ -279,6 +277,256 @@ function dom_prepend_child(parent: HTMLElement, child: HTMLElement): HTMLElement
 }
 function dom_append_child(parent: HTMLElement, child: HTMLElement): HTMLElement {
 	return parent.appendChild(child);
+}
+
+// transformers
+function query_nodes<K extends ts.SyntaxKind>(
+	source_file: ts.SourceFile,
+	node: ts.Node,
+	target_kind: K
+): ts.Node | undefined {
+	for (const child of node.getChildren(source_file)) {
+		if (child.kind === target_kind) return child;
+	}
+}
+
+function query_all<K extends ts.SyntaxKind>(
+	source_file: ts.SourceFile,
+	node: ts.Node,
+	target_kind: K
+): ts.Node[] {
+	const result: ts.Node[] = node.kind === target_kind ? [node] : [];
+
+	for (const child of node.getChildren(source_file)) {
+		result.push(...query_all(source_file, child, target_kind));
+	}
+
+	return result;
+}
+function do_imex_transform(
+	base_dir: string,
+	import_map: ScopelessImportMap | undefined,
+	source_path: string,
+	source_file: ts.SourceFile
+) {
+	const source_lines = source_file.text.split('\n');
+
+	const export_calls: ts.Expression[] = [];
+	const import_calls: ts.VariableDeclarationList[] = [];
+	const real_imports: ts.ImportDeclaration[] = [];
+
+	const this_module = source_path;
+
+	function transformer_imex<T extends ts.Node>(
+		context: ts.TransformationContext
+	): ts.Transformer<T> {
+		const id_scope = context.factory.createIdentifier('__dum_scope');
+		const id_export = context.factory.createIdentifier('__dum_export');
+		const id_import = context.factory.createIdentifier('__dum_import');
+
+		function clean(target: string): string {
+			const quote_match = /^\s*['"`](?<data>.*)['"`]\s*$/gm.exec(target);
+			if (quote_match && quote_match.groups) target = quote_match.groups.data;
+			return target;
+		}
+		function make_export(m: string, k: string, target: string | ts.Expression) {
+			return context.factory.createCallExpression(id_export, undefined, [
+				context.factory.createStringLiteral(
+					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
+				),
+				context.factory.createStringLiteral(clean(k)),
+				typeof target === 'string' ? context.factory.createIdentifier(target) : target,
+			]);
+		}
+		function make_import(m: string, k?: string): ts.CallExpression;
+		function make_import(m: string, k?: string, target?: string): ts.VariableDeclarationList;
+		function make_import(m: string, k?: string, target?: string) {
+			const args: ts.Expression[] = [
+				context.factory.createStringLiteral(
+					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
+				),
+			];
+			if (k) args.push(context.factory.createStringLiteral(clean(k)));
+
+			const call = context.factory.createCallExpression(id_import, undefined, args);
+			if (target)
+				return context.factory.createVariableDeclarationList(
+					[context.factory.createVariableDeclaration(target, undefined, undefined, call)],
+					ts.NodeFlags.Const
+				);
+
+			return call;
+		}
+		function make_expose(m: string, source: string) {
+			return context.factory.createCallExpression(
+				context.factory.createPropertyAccessExpression(
+					context.factory.createIdentifier('Object'),
+					context.factory.createIdentifier('assign')
+				),
+				undefined,
+				[
+					context.factory.createElementAccessExpression(
+						id_scope,
+						context.factory.createStringLiteral(
+							clean_module_source(this.base_dir, source_path, path.normalize(clean(m)))
+						)
+					),
+					context.factory.createElementAccessExpression(
+						id_scope,
+						context.factory.createStringLiteral(clean(source))
+					),
+				]
+			);
+		}
+
+		// the visitor
+		function visit(node: ts.Node): ts.Node | undefined {
+			const node_line =
+				source_lines[source_file.getLineAndCharacterOfPosition(node.getStart(source_file)).line];
+
+			// omits and ignores
+			// omit omit lines, ignore ignores
+			if (!ts.isSourceFile(node)) {
+				if (/__dum_omit/.exec(node_line)) return undefined;
+				if (/__dum_ignore/.exec(node_line)) return node;
+			}
+
+			// standard export, agg export
+			if (ts.isExportDeclaration(node)) {
+				if (node.moduleSpecifier) {
+					// RE-EXPORT
+					const export_module = node.moduleSpecifier.getText(source_file);
+
+					// process named
+					const named_node = query_nodes(source_file, node, ts.SyntaxKind.NamedExports);
+					if (named_node) {
+						for (const spec of query_all(source_file, named_node, ts.SyntaxKind.ExportSpecifier)) {
+							// spec satisfies ts.ExportSpecifier;
+							const old_name = (spec as ts.ExportSpecifier).propertyName?.getText(source_file);
+							const name = (spec as ts.ExportSpecifier).name.getText(source_file);
+							export_calls.push(
+								make_export(this_module, name, make_import(export_module, old_name || name))
+							);
+						}
+					}
+
+					// process namespace
+					const namespace_node = query_nodes(source_file, node, ts.SyntaxKind.NamespaceExport);
+					if (namespace_node) {
+						const id = query_nodes(source_file, namespace_node, ts.SyntaxKind.Identifier);
+						if (id)
+							export_calls.push(
+								make_export(this_module, id.getText(source_file), make_import(export_module))
+							);
+					}
+
+					if (!(named_node || namespace_node)) {
+						// alias-less namespace export
+						export_calls.push(make_expose(this_module, export_module));
+					}
+				} else {
+					// NORMAL EXPORT
+					const named_node = query_nodes(source_file, node, ts.SyntaxKind.NamedExports);
+					if (named_node) {
+						for (const spec of query_all(source_file, named_node, ts.SyntaxKind.ExportSpecifier)) {
+							const old_name = (spec as ts.ExportSpecifier).propertyName?.getText(source_file);
+							const name = (spec as ts.ExportSpecifier).name.getText(source_file);
+							export_calls.push(make_export(this_module, name, old_name || name));
+						}
+					}
+				}
+				return undefined;
+			}
+
+			// modifier export
+			const mods = ts.getModifiers(node as ts.HasModifiers);
+			if (mods && mods.some((v) => v.kind === ts.SyntaxKind.ExportKeyword)) {
+				const id = query_nodes(source_file, node, ts.SyntaxKind.Identifier)?.getText(source_file);
+				if (id) export_calls.push(make_export(this_module, id, id));
+				return context.factory.replaceModifiers(
+					node as ts.HasModifiers,
+					mods.filter((m) => !(m.kind === ts.SyntaxKind.ExportKeyword))
+				);
+			}
+
+			// standard import
+			if (ts.isImportDeclaration(node)) {
+				const import_module = node.moduleSpecifier.getText(source_file);
+
+				// check import map
+				if (import_map && import_module in import_map) {
+					real_imports.push(node);
+					return undefined;
+				}
+
+				if (node.importClause) {
+					// process named
+					const named_node = query_nodes(
+						source_file,
+						node.importClause,
+						ts.SyntaxKind.NamedImports
+					);
+					if (named_node) {
+						for (const spec of query_all(source_file, named_node, ts.SyntaxKind.ImportSpecifier)) {
+							const old_name = (spec as ts.ImportSpecifier).propertyName?.getText(source_file);
+							const name = (spec as ts.ImportSpecifier).name.getText(source_file);
+							import_calls.push(make_import(import_module, name, old_name || name));
+						}
+					}
+
+					// process namespace
+					const namespace_node = query_nodes(
+						source_file,
+						node.importClause,
+						ts.SyntaxKind.NamespaceImport
+					);
+					if (namespace_node) {
+						const id = query_nodes(source_file, namespace_node, ts.SyntaxKind.Identifier);
+						if (id)
+							import_calls.push(make_import(import_module, undefined, id.getText(source_file)));
+					}
+				} else {
+					// side effect, ignore because bundle
+				}
+				return undefined;
+			}
+			return ts.visitEachChild(node, visit, context);
+		}
+
+		return (node) => ts.visitNode(node, visit) as T;
+	}
+
+	const xform = ts.transform(source_file, [transformer_imex]);
+	let new_source = xform.transformed[0] as ts.SourceFile;
+
+	if (new_source.text.trim().length < 1) return undefined;
+
+	// closure it
+	new_source = ts.factory.updateSourceFile(new_source, [
+		...real_imports,
+		ts.factory.createExpressionStatement(
+			ts.factory.createCallExpression(
+				ts.factory.createArrowFunction(
+					undefined,
+					undefined,
+					[],
+					undefined,
+					ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+					ts.factory.createBlock(
+						[
+							...import_calls.map((c) => ts.factory.createVariableStatement([], c)),
+							...new_source.statements,
+							...export_calls.map((c) => ts.factory.createExpressionStatement(c)),
+						],
+						true
+					)
+				),
+				[],
+				[]
+			)
+		),
+	]);
+	return new_source;
 }
 
 /** dum loader Project class */
@@ -376,19 +624,19 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	}
 
 	// code
-	private translate_code(source_file: string): string | undefined {
+	private translate_code(source_path: string): string | undefined {
 		// get source file as path and module name
-		source_file = path.normalize(source_file);
+		source_path = path.normalize(source_path);
 		const export_module = clean_module_source(
 			this.base_dir,
-			source_file,
-			path.basename(source_file)
+			source_path,
+			path.basename(source_path)
 		);
 
 		// transpile code
 		let code_js: string = (() => {
-			const raw = fs.readFileSync(source_file, { encoding: 'utf-8' });
-			const ext = path.extname(source_file).toLocaleLowerCase();
+			const raw = fs.readFileSync(source_path, { encoding: 'utf-8' });
+			const ext = path.extname(source_path).toLocaleLowerCase();
 			switch (ext) {
 				case '.ts':
 					return ts.transpileModule(raw, {
@@ -404,95 +652,19 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			}
 		})();
 
-		// loop through lines to find import/exports
-		const source_lines = code_js.split('\n');
-		const import_lines = [];
-		const output_lines = [];
-		const export_lines = [];
+		const new_source = do_imex_transform(
+			this.base_dir,
+			this.import_map,
+			source_path,
+			ts.createSourceFile('temp.js', code_js, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
+		);
 
-		for (let i = 0; i < source_lines.length; ++i) {
-			const line = source_lines[i].trim();
-
-			// const bad_match = /^\s*export\s+{\W*}/i.exec(line);
-			// ignore 'export {stuff}' form
-			// ignore __dum_omit lines
-			// TODO: allow for this if i find the desire/need
-			// TODO: document omit/ignore
-			if (/^\s*export\s+{\W*}/i.exec(line) || /__dum_omit/.exec(line)) continue;
-
-			// don't touch __dum_ignore lines
-			if (/__dum_ignore/.exec(line)) {
-				output_lines.push(line);
-				continue;
-			}
-
-			// do imports
-			const import_match = IMEX_IMPORT_REGEX.exec(line);
-			if (import_match && import_match.groups) {
-				// if it's in the import map, ignore
-				output_lines.push(`// ${line.trim()}`);
-				if (this.import_map && import_match.groups.source in this.import_map) {
-					import_lines.push(line);
-					continue;
-				}
-
-				const import_module: string = clean_module_source(
-					this.base_dir,
-					source_file,
-					path.normalize(import_match.groups.source)
-				);
-
-				if (import_match.groups.namespace) {
-					// namespace import
-					// import * as example from 'example.ts'
-					const imported_namespace = import_match.groups.namespace.trim();
-					output_lines.push(`const ${imported_namespace} = __dum_import('${import_module}');`);
-				} else if (import_match.groups.named) {
-					// named imports
-					// import {test1, test2 as other_test} from 'example.ts'
-					for (const named of import_match.groups.named.trim().split(',')) {
-						const imported_name = named.trim();
-						if (imported_name.length < 1) continue;
-						output_lines.push(
-							(() => {
-								const as_match = /(?<key>\S*)\s+as\s+(?<tform>\S*)/i.exec(imported_name);
-								const target_name: string = as_match ? as_match.groups.tform : imported_name,
-									item_name: string = as_match ? as_match.groups.key : imported_name;
-								return `const ${target_name.trim()} = __dum_import('${import_module}', '${item_name.trim()}');`;
-							})()
-						);
-					}
-				}
-				continue; // line done
-			}
-
-			// aaaaand exports
-			const export_match = IMEX_EXPORT_REGEX.exec(line);
-			if (export_match && export_match.groups) {
-				output_lines.push(`// ${line.trim()}`);
-
-				const ne = export_match.groups.name.trim();
-				const nline = `__dum_export('${export_module}', '${ne}', ${ne});`;
-				export_lines.push(nline);
-				output_lines.push(line.replace(/^\s*export\s+/i, ''));
-
-				continue; // line done
-			}
-
-			// anything else, just push line
-			output_lines.push(line);
-		}
-
-		// concat actual code and exports
-		code_js = (output_lines.join('\n') + export_lines.join('\n')).trim();
+		const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+		code_js = printer.printNode(ts.EmitHint.Unspecified, new_source, new_source);
 
 		// if there was no actual code or actual export (eg: .ts files only exporting types),
 		// skip the file
-		if (code_js.length) {
-			// TODO: closure option
-			// concat import_map imports to code
-			return `${import_lines.join('\n')}\n(()=>{\n${code_js}\n})();`.trim();
-		} else return undefined;
+		return code_js;
 	}
 	private process_code(dom: jsdom.JSDOM) {
 		// add import map to dom

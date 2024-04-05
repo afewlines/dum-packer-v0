@@ -13,6 +13,6 @@ const config = defineConfig({
 	splitting: false,
 	sourcemap: true,
 
-	minify: false,
+	minify: true,
 });
 export default config;

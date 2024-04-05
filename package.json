@@ -27,11 +27,10 @@
     "license": "ISC",
     "scripts": {
         "link": "npm install && npm run build && npm link .",
-        "build": "tsup"
+        "build": "tsup && npm link ."
     },
     "type": "module",
     "main": "./dist/index.cjs",
-    "module": "./dist/index.mjs",
     "types": "./dist/index.d.ts",
     "files": [
         "dist"
