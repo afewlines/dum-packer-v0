@@ -256,7 +256,7 @@ function dum_mime_type(ext: string): string {
 			return 'application/octet-stream';
 	}
 }
-/**get module source relative to base dir
+/** get module source relative to base dir
  * @param base_dir string/path: base directory of project
  * @param requester string/path: source file that is importing/exporting
  * @param module_source string/path: normalized path to module from source file
@@ -271,29 +271,33 @@ function clean_module_source(base_dir: string, requester: string, module_source:
 	return new_path;
 }
 
-// specific helpers
-function dom_prepend_child(parent: HTMLElement, child: HTMLElement): HTMLElement {
-	return parent.insertBefore(child, parent.children[0]);
-}
-function dom_append_child(parent: HTMLElement, child: HTMLElement): HTMLElement {
-	return parent.appendChild(child);
-}
-
 // transformers
-function query_nodes<K extends ts.SyntaxKind>(
+/** Look for immediate child of {@link parent} of kind {@link target_kind}.
+ * @param source_file - {@link ts.SourceFile} that holds {@link parent}
+ * @param parent - node to query children of
+ * @param target_kind - {@link ts.SyntaxKind} of node to search for
+ * @returns node if found, else underfined
+ */
+function query_children(
 	source_file: ts.SourceFile,
-	node: ts.Node,
-	target_kind: K
+	parent: ts.Node,
+	target_kind: ts.SyntaxKind
 ): ts.Node | undefined {
-	for (const child of node.getChildren(source_file)) {
+	for (const child of parent.getChildren(source_file)) {
 		if (child.kind === target_kind) return child;
 	}
 }
-
-function query_all<K extends ts.SyntaxKind>(
+/** Collect all descendants of {@link node} of kind {@link target_kind}.
+ * @param source_file - {@link ts.SourceFile} that holds {@link node}
+ * @param node - node to begin search from
+ * @param target_kind - {@link ts.SyntaxKind} of node to search for
+ * @returns array of found nodes
+ * @remarks Recursive
+ */
+function query_all(
 	source_file: ts.SourceFile,
 	node: ts.Node,
-	target_kind: K
+	target_kind: ts.SyntaxKind
 ): ts.Node[] {
 	const result: ts.Node[] = node.kind === target_kind ? [node] : [];
 
@@ -303,6 +307,7 @@ function query_all<K extends ts.SyntaxKind>(
 
 	return result;
 }
+/** Transform target source file to dum imex format */
 function do_imex_transform(
 	base_dir: string,
 	import_map: ScopelessImportMap | undefined,
@@ -398,7 +403,7 @@ function do_imex_transform(
 					const export_module = node.moduleSpecifier.getText(source_file);
 
 					// process named
-					const named_node = query_nodes(source_file, node, ts.SyntaxKind.NamedExports);
+					const named_node = query_children(source_file, node, ts.SyntaxKind.NamedExports);
 					if (named_node) {
 						for (const spec of query_all(source_file, named_node, ts.SyntaxKind.ExportSpecifier)) {
 							// spec satisfies ts.ExportSpecifier;
@@ -411,9 +416,9 @@ function do_imex_transform(
 					}
 
 					// process namespace
-					const namespace_node = query_nodes(source_file, node, ts.SyntaxKind.NamespaceExport);
+					const namespace_node = query_children(source_file, node, ts.SyntaxKind.NamespaceExport);
 					if (namespace_node) {
-						const id = query_nodes(source_file, namespace_node, ts.SyntaxKind.Identifier);
+						const id = query_children(source_file, namespace_node, ts.SyntaxKind.Identifier);
 						if (id)
 							export_calls.push(
 								make_export(this_module, id.getText(source_file), make_import(export_module))
@@ -426,7 +431,7 @@ function do_imex_transform(
 					}
 				} else {
 					// NORMAL EXPORT
-					const named_node = query_nodes(source_file, node, ts.SyntaxKind.NamedExports);
+					const named_node = query_children(source_file, node, ts.SyntaxKind.NamedExports);
 					if (named_node) {
 						for (const spec of query_all(source_file, named_node, ts.SyntaxKind.ExportSpecifier)) {
 							const old_name = (spec as ts.ExportSpecifier).propertyName?.getText(source_file);
@@ -441,7 +446,9 @@ function do_imex_transform(
 			// modifier export
 			const mods = ts.getModifiers(node as ts.HasModifiers);
 			if (mods && mods.some((v) => v.kind === ts.SyntaxKind.ExportKeyword)) {
-				const id = query_nodes(source_file, node, ts.SyntaxKind.Identifier)?.getText(source_file);
+				const id = query_children(source_file, node, ts.SyntaxKind.Identifier)?.getText(
+					source_file
+				);
 				if (id) export_calls.push(make_export(this_module, id, id));
 				return context.factory.replaceModifiers(
 					node as ts.HasModifiers,
@@ -461,7 +468,7 @@ function do_imex_transform(
 
 				if (node.importClause) {
 					// process named
-					const named_node = query_nodes(
+					const named_node = query_children(
 						source_file,
 						node.importClause,
 						ts.SyntaxKind.NamedImports
@@ -475,13 +482,13 @@ function do_imex_transform(
 					}
 
 					// process namespace
-					const namespace_node = query_nodes(
+					const namespace_node = query_children(
 						source_file,
 						node.importClause,
 						ts.SyntaxKind.NamespaceImport
 					);
 					if (namespace_node) {
-						const id = query_nodes(source_file, namespace_node, ts.SyntaxKind.Identifier);
+						const id = query_children(source_file, namespace_node, ts.SyntaxKind.Identifier);
 						if (id)
 							import_calls.push(make_import(import_module, undefined, id.getText(source_file)));
 					}
@@ -589,8 +596,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	private process_style(dom: jsdom.JSDOM) {
 		for (const style of this.style) {
 			// append style bucket to head
-			dom_append_child(
-				dom.window.document.head,
+			dom.window.document.head.appendChild(
 				(() => {
 					// read scss/sass, compile
 					const style_string = (() => {
@@ -615,7 +621,9 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 					// create style bucket, fill
 					const bucket = dom.window.document.createElement('style');
-					bucket.id = `dum_style_${style}`;
+
+					bucket.setAttribute('__dum_style', clean_module_source(this.base_dir, '', style));
+
 					bucket.innerHTML = `\n${style_string}\n`;
 					return bucket;
 				})()
@@ -634,7 +642,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		);
 
 		// transpile code
-		let code_js: string = (() => {
+		const code_js: string = (() => {
 			const raw = fs.readFileSync(source_path, { encoding: 'utf-8' });
 			const ext = path.extname(source_path).toLocaleLowerCase();
 			switch (ext) {
@@ -656,24 +664,19 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			this.base_dir,
 			this.import_map,
 			source_path,
-			ts.createSourceFile('temp.js', code_js, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
+			ts.createSourceFile(source_path, code_js, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
 		);
 
 		const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
-		code_js = printer.printNode(ts.EmitHint.Unspecified, new_source, new_source);
-
-		// if there was no actual code or actual export (eg: .ts files only exporting types),
-		// skip the file
-		return code_js;
+		return printer.printNode(ts.EmitHint.Unspecified, new_source, new_source);
 	}
 	private process_code(dom: jsdom.JSDOM) {
 		// add import map to dom
 		if (this.import_map) {
-			dom_append_child(
-				dom.window.document.body,
+			dom.window.document.body.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.id = 'dum_IMPORT_MAP';
+					bucket.setAttribute('__dum_code', 'IMPORT_MAP');
 					bucket.type = 'importmap';
 					bucket.innerHTML = `\n${JSON.stringify({ imports: this.import_map }, undefined, this.build_options.minify ? undefined : 4)}\n`;
 					return bucket;
@@ -684,11 +687,10 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		if (this.code == undefined) return;
 
 		// add dum module (IMEX) code to dom
-		dom_append_child(
-			dom.window.document.body,
+		dom.window.document.body.appendChild(
 			(() => {
 				const bucket = dom.window.document.createElement('script');
-				bucket.id = `dum_IMEX`;
+				bucket.setAttribute('__dum_code', 'IMEX');
 				bucket.innerHTML = `\n${IMEX_RAW}\n`;
 				// bucket.type = 'module';
 				return bucket;
@@ -721,13 +723,17 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 			// add modularized code to dom
 			// dom_prepend_child(
-			dom_append_child(
-				dom.window.document.body,
+			dom.window.document.body.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.id = `dum_code-${clean_module_source(this.base_dir, '', source_file)}`;
-					bucket.innerHTML = `\n${code_result}\n`;
 					bucket.type = 'module';
+
+					//
+					bucket.setAttribute('__dum_module', clean_module_source(this.base_dir, '', source_file));
+					bucket.setAttribute('__dum_module_source', path.relative(this.base_dir, source_file));
+
+					//
+					bucket.innerHTML = `\n${code_result}\n`;
 					return bucket;
 				})()
 			);
@@ -740,26 +746,24 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		// create new pseudo-dom from html
 		const dom = new jsdom.JSDOM(this.process_template());
 		if (this.style) this.process_style(dom);
-		if (this.code) this.process_code(dom);
 
 		// do hot reload
 		if (this.build_options?.server?.hot_reload) {
 			// get server's socket io
-			dom_append_child(
-				dom.window.document.head,
+			dom.window.document.head.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
+					bucket.setAttribute('__dum_code', 'HR_SOCKETIO');
 					bucket.src = `http://${this.build_options.server.hostname}:${this.build_options.server.port}/socket.io/socket.io.js`;
 					return bucket;
 				})()
 			);
 
 			// insert code
-			dom_prepend_child(
-				dom.window.document.body,
+			dom.window.document.body.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.id = 'dum_HOT_RELOAD';
+					bucket.setAttribute('__dum_code', 'HR');
 					bucket.innerHTML =
 						'\n' +
 						HOT_RELOAD_RAW.replace('$HOST', this.build_options.server.hostname)
@@ -770,6 +774,9 @@ export class DumPackerProject implements DumPackerProjectOpts {
 				})()
 			);
 		}
+
+		// process code
+		if (this.code) this.process_code(dom);
 
 		// rasterize dom
 		let html_string = dom.serialize();

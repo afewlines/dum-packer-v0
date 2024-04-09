@@ -5,7 +5,7 @@ const config = defineConfig({
 	publicDir: 'public/',
 
 	target: 'esnext',
-	format: ['cjs', 'esm'],
+	format: ['cjs'],
 
 	cjsInterop: true,
 	clean: true,
