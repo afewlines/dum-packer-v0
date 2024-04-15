@@ -461,7 +461,7 @@ function do_imex_transform(
 				const import_module = node.moduleSpecifier.getText(source_file);
 
 				// check import map
-				if (import_map && import_module in import_map) {
+				if (import_map && clean(import_module) in import_map) {
 					real_imports.push(node);
 					return undefined;
 				}
