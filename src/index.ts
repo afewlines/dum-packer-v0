@@ -278,13 +278,13 @@ function clean_module_source(base_dir: string, requester: string, module_source:
  * @param target_kind - {@link ts.SyntaxKind} of node to search for
  * @returns node if found, else underfined
  */
-function query_children(
+function query_children<R extends ts.Node = ts.Node>(
 	source_file: ts.SourceFile,
 	parent: ts.Node,
 	target_kind: ts.SyntaxKind
-): ts.Node | undefined {
+): R | undefined {
 	for (const child of parent.getChildren(source_file)) {
-		if (child.kind === target_kind) return child;
+		if (child.kind === target_kind) return child as R;
 	}
 }
 /** Collect all descendants of {@link node} of kind {@link target_kind}.
@@ -294,15 +294,15 @@ function query_children(
  * @returns array of found nodes
  * @remarks Recursive
  */
-function query_all(
+function query_all<R extends ts.Node = ts.Node>(
 	source_file: ts.SourceFile,
 	node: ts.Node,
 	target_kind: ts.SyntaxKind
-): ts.Node[] {
-	const result: ts.Node[] = node.kind === target_kind ? [node] : [];
+): R[] {
+	const result: R[] = node.kind === target_kind ? [node as R] : [];
 
 	for (const child of node.getChildren(source_file)) {
-		result.push(...query_all(source_file, child, target_kind));
+		result.push(...query_all<R>(source_file, child, target_kind));
 	}
 
 	return result;
@@ -334,12 +334,12 @@ function do_imex_transform(
 			if (quote_match && quote_match.groups) target = quote_match.groups.data;
 			return target;
 		}
-		function make_export(m: string, k: string, target: string | ts.Expression) {
+		function make_export(m: string, k: string | ts.Identifier, target: string | ts.Expression) {
 			return context.factory.createCallExpression(id_export, undefined, [
 				context.factory.createStringLiteral(
 					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
 				),
-				context.factory.createStringLiteral(clean(k)),
+				typeof k === 'string' ? context.factory.createStringLiteral(clean(k)) : k,
 				typeof target === 'string' ? context.factory.createIdentifier(target) : target,
 			]);
 		}
@@ -361,6 +361,17 @@ function do_imex_transform(
 				);
 
 			return call;
+		}
+		function make_eximport(m: string, k: ts.Identifier, ref: ts.ModuleReference) {
+			return context.factory.createCallExpression(id_export, undefined, [
+				context.factory.createStringLiteral(
+					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
+				),
+				k,
+				ts.isExternalModuleReference(ref)
+					? ref.expression
+					: context.factory.createIdentifier(ref.getText(source_file)),
+			]);
 		}
 		function make_expose(m: string, source: string) {
 			return context.factory.createCallExpression(
@@ -396,6 +407,11 @@ function do_imex_transform(
 				if (/__dum_ignore/.exec(node_line)) return node;
 			}
 
+			// export import
+			if (ts.isImportEqualsDeclaration(node)) {
+				export_calls.push(make_eximport(this_module, node.name, node.moduleReference));
+				return undefined;
+			}
 			// standard export, agg export
 			if (ts.isExportDeclaration(node)) {
 				if (node.moduleSpecifier) {
@@ -450,6 +466,22 @@ function do_imex_transform(
 					source_file
 				);
 				if (id) export_calls.push(make_export(this_module, id, id));
+				else if (ts.isVariableStatement(node)) {
+					// i wonder what else might fall through the cracks...
+					// if you see something that doesn't get picked up by IMEX but has
+					// the 'export' keyword removed, let me know
+					for (const dec of query_all<ts.VariableDeclaration>(
+						source_file,
+						node,
+						ts.SyntaxKind.VariableDeclaration
+					)) {
+						if (dec.initializer)
+							export_calls.push(
+								make_export(this_module, dec.name.getText(source_file), dec.initializer)
+							);
+					}
+					// return undefined; // dont omit :)
+				}
 				return context.factory.replaceModifiers(
 					node as ts.HasModifiers,
 					mods.filter((m) => !(m.kind === ts.SyntaxKind.ExportKeyword))
@@ -497,6 +529,7 @@ function do_imex_transform(
 				}
 				return undefined;
 			}
+
 			return ts.visitEachChild(node, visit, context);
 		}
 
