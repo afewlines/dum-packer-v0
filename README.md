@@ -2,12 +2,12 @@
 
 A dumb way to pack a web application into a daft little bundle.
 
-This package is designed to bundle parts of a web-based project into a single html file that is readable and straight-forward. Effectively, it just slots your html/code/styling into their respective areas.
+This package is designed to bundle parts of a web-based project into a single HTML file that is readable and straight-forward. Effectively, it just slots your HTML/code/styling into their respective areas.
 
 ## Features
 
 - Single file output
-- Automatic translation to html/css/js
+- Automatic translation to HTML/CSS/JS
 - Minification & formatting/beautifier
 - Development server/hot reload
 
@@ -37,7 +37,19 @@ This package is designed to bundle parts of a web-based project into a single ht
 - Include the <html> tag in the template page.
 - The built project will be emitted to the current directory
 
-# Example
+# Usage
+
+Dumb simple: import the `DumPackerProject` class, instantiate it with your project's options, call `.run()` or `.build()`, and you're golden.
+
+Module resolution at runtime is handled by dum-imex. Any import or export calls will be converted to `__dum_import` and `__dum_export` calls. A global object, `__dum_scope`, is used to hold exported items. Defaults and side-effect imports will be omitted.
+
+The packer will generate a dependency tree from files indicated in `code`, translate all `code` files and local dependencies, transform them into dum-imex format, toss'em in separate closures, then append them in separate `script` tags to the end of the document's body.
+
+Adding the comment `__dum_omit` will exclude the line from the output.
+
+Adding the comment `__dum_ignore` will prevent modification from the dum-imex transform.
+
+## Example
 
 File structure
 
@@ -66,9 +78,9 @@ const project = new DumPackerProject({
 	// required; single file
 	page: 'src/index.pug',
 	// optional; single file or array
-	style: 'src/style.scss',
+	style: ['src/style.scss'],
 	// optional; single file or array
-	code: ['src/index.ts'],
+	code: 'src/index.ts',
 
 	// optional; html import map script type w/o scopes
 	import_map: {
@@ -115,7 +127,7 @@ I'll probably keep tinkering with this whenever I find things to tweak or featur
 
 Things that are likely:
 
-- Option to disable dum_module system and/or closures
+- Option to disable dum-imex system and/or closures
   - Former will probably just be based on if it's needed or not
 - Option to determine where built project file goes (it doesn't feel necessary; this packer is dumb)
 - More options for ~~minification, server,~~ other obfuscated elements
