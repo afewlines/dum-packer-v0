@@ -637,6 +637,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 						const opts: sass.StringOptions<'sync'> = {
 							style: this.build_options.minify ? 'compressed' : 'expanded',
 							syntax: 'scss',
+							url: new URL(`file://${path.resolve(style)}`),
 						};
 						switch (path.extname(style).toLocaleLowerCase()) {
 							case '.sass':
