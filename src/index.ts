@@ -335,6 +335,8 @@ function do_imex_transform(
 			return target;
 		}
 		function make_export(m: string, k: string | ts.Identifier, target: string | ts.Expression) {
+			// console.log('export', m, k);
+
 			return context.factory.createCallExpression(id_export, undefined, [
 				context.factory.createStringLiteral(
 					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
@@ -346,6 +348,8 @@ function do_imex_transform(
 		function make_import(m: string, k?: string): ts.CallExpression;
 		function make_import(m: string, k?: string, target?: string): ts.VariableDeclarationList;
 		function make_import(m: string, k?: string, target?: string) {
+			// console.log('import', m, k, target);
+
 			const args: ts.Expression[] = [
 				context.factory.createStringLiteral(
 					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
@@ -363,6 +367,8 @@ function do_imex_transform(
 			return call;
 		}
 		function make_eximport(m: string, k: ts.Identifier, ref: ts.ModuleReference) {
+			// console.log('eximport', m, k);
+
 			return context.factory.createCallExpression(id_export, undefined, [
 				context.factory.createStringLiteral(
 					clean_module_source(base_dir, source_path, path.normalize(clean(m)))
@@ -374,6 +380,8 @@ function do_imex_transform(
 			]);
 		}
 		function make_expose(m: string, source: string) {
+			// console.log('expose', m, source);
+
 			return context.factory.createCallExpression(
 				context.factory.createPropertyAccessExpression(
 					context.factory.createIdentifier('Object'),
@@ -452,6 +460,7 @@ function do_imex_transform(
 						for (const spec of query_all(source_file, named_node, ts.SyntaxKind.ExportSpecifier)) {
 							const old_name = (spec as ts.ExportSpecifier).propertyName?.getText(source_file);
 							const name = (spec as ts.ExportSpecifier).name.getText(source_file);
+
 							export_calls.push(make_export(this_module, name, old_name || name));
 						}
 					}
@@ -465,20 +474,16 @@ function do_imex_transform(
 				const id = query_children(source_file, node, ts.SyntaxKind.Identifier)?.getText(
 					source_file
 				);
+
 				if (id) export_calls.push(make_export(this_module, id, id));
 				else if (ts.isVariableStatement(node)) {
 					// i wonder what else might fall through the cracks...
 					// if you see something that doesn't get picked up by IMEX but has
 					// the 'export' keyword removed, let me know
-					for (const dec of query_all<ts.VariableDeclaration>(
-						source_file,
-						node,
-						ts.SyntaxKind.VariableDeclaration
-					)) {
-						if (dec.initializer)
-							export_calls.push(
-								make_export(this_module, dec.name.getText(source_file), dec.initializer)
-							);
+					for (const dec of node.declarationList.declarations) {
+						export_calls.push(
+							make_export(this_module, dec.name.getText(source_file), dec.name as ts.Identifier)
+						);
 					}
 					// return undefined; // dont omit :)
 				}
