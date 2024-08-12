@@ -1,8 +1,9 @@
 {
     "name": "dum-packer",
     "version": "0.1.8",
-    "author": "brad, seeker",
     "description": "Simple Web Project Packer",
+    "author": "brad, seeker",
+    "license": "ISC",
     "homepage": "https://github.com/afewlines/dum-packer#readme",
     "repository": "github:afewlines/dum-packer",
     "bugs": {
@@ -24,26 +25,30 @@
         "hmr",
         "reload"
     ],
-    "license": "ISC",
-    "scripts": {
-        "link": "npm install && npm run build && npm link .",
-        "build": "tsup && npm link ."
-    },
+
     "type": "module",
-    "main": "./dist/index.cjs",
-    "types": "./dist/index.d.cts",
+    "main": "./dist/index.esm.js",
+    "module": "./dist/index.esm.js",
+    "types": "./dist/types/index.d.ts",
     "files": [
         "dist"
     ],
+
+    "scripts": {
+        "link": "npm install && npm run build && npm link .",
+        "build": "tsx build.ts --clean"
+    },
+
     "dependencies": {
         "dependency-tree": "^10.0.9",
+        "esbuild": "^0.23.0",
         "html-minifier-terser": "^7.2.0",
         "jsdom": "^23.0.1",
         "node-watch": "^0.7.4",
+        "prettier": "^3.2.5",
         "pug": "^3.0.2",
         "sass": "^1.69.5",
-        "socket.io": "^4.7.3",
-        "prettier": "^3.2.5"
+        "socket.io": "^4.7.3"
     },
     "devDependencies": {
         "@rushstack/eslint-patch": "^1.7.2",

@@ -23,8 +23,9 @@ coverage
 *.sln
 *.sw?
 
-
-
 # dev
 template/
 test.*
+
+# proj
+src/single_filer.ts

@@ -1,31 +1,26 @@
-import * as fs from 'fs';
 import * as dt from 'dependency-tree';
+import * as esbuild from 'esbuild';
+import * as fs from 'fs';
 import * as minify from 'html-minifier-terser';
 import * as jsdom from 'jsdom';
+import watch from 'node-watch';
 import * as http from 'node:http';
 import * as path from 'path';
+import * as prettier from 'prettier';
 import * as pug from 'pug';
 import * as sass from 'sass';
 import * as socketio from 'socket.io';
-import * as ts from 'typescript';
-import * as prettier from 'prettier';
-import watch from 'node-watch';
+import ts from 'typescript';
 
 const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = 5174;
 
-const IMEX_RAW = fs.readFileSync(path.resolve(__dirname, 'imex_client.js'), {}).toString();
-const HOT_RELOAD_RAW = fs
-	.readFileSync(path.resolve(__dirname, 'hot_reload_client.js'), {})
-	.toString();
+import HOT_RELOAD_RAW from '../public/hot_reload_client.template.js';
+import IMEX_RAW from '../public/imex_client.template.js';
 
-interface ServerState {
-	server: http.Server;
-	ssock?: socketio.Server;
-	hr_state?: {
-		session: number;
-		version: number;
-	};
+interface HRState {
+	session: number;
+	version: number;
 }
 export interface ScopelessImportMap {
 	[import_name: string]: string;
@@ -48,6 +43,28 @@ export interface DumPackerBuildOpts {
 		server_dir?: string; // directory to serve. default: project.base_dir
 		hot_reload?: boolean; // should hot reload when watcher issues new build
 	};
+}
+
+// for hooks that return a boolean, false stops standard execution
+interface DumPackerProjectHooks {
+	build_start?: () => boolean;
+	build_done?: () => void;
+
+	on_watch?: (event: 'update' | 'remove', file_path: string) => boolean;
+	on_serve?: (res: http.ServerResponse) => boolean;
+
+	/**
+	 * hook for processing page
+	 * @param {DumPackerProject} proj Project object
+	 * @param {string} ext File extension of project's page
+	 * @param {string} data Page file's data
+	 * @returns {undefined|string} undefined doesn't affect page, string used as final page
+	 */
+	process_page?: (ext: string, data: string) => undefined | string;
+	process_style?: (path: string) => undefined | string | false;
+	process_code?: (export_module: string, path: string) => undefined | string | false;
+
+	before_rasterize?: (dom: jsdom.JSDOM) => boolean;
 }
 export interface DumPackerProjectOpts {
 	/** name of the project & output.html */
@@ -72,6 +89,11 @@ export interface DumPackerProjectOpts {
 
 	/** build options */
 	build_options?: DumPackerBuildOpts;
+
+	disable_imex?: boolean;
+
+	/** hooks function */
+	project_hooks?: (proj: DumPackerProject, hooks: DumPackerProjectHooks) => void;
 }
 
 class SetList<T> extends Array<T> {
@@ -297,12 +319,13 @@ function query_children<R extends ts.Node = ts.Node>(
 function query_all<R extends ts.Node = ts.Node>(
 	source_file: ts.SourceFile,
 	node: ts.Node,
-	target_kind: ts.SyntaxKind
+	target_kind: ts.SyntaxKind,
+	include_root: boolean = true
 ): R[] {
-	const result: R[] = node.kind === target_kind ? [node as R] : [];
+	const result: R[] = include_root && node.kind === target_kind ? [node as R] : [];
 
 	for (const child of node.getChildren(source_file)) {
-		result.push(...query_all<R>(source_file, child, target_kind));
+		result.push(...query_all<R>(source_file, child, target_kind, true));
 	}
 
 	return result;
@@ -392,7 +415,7 @@ function do_imex_transform(
 					context.factory.createElementAccessExpression(
 						id_scope,
 						context.factory.createStringLiteral(
-							clean_module_source(this.base_dir, source_path, path.normalize(clean(m)))
+							clean_module_source(base_dir, source_path, path.normalize(clean(m)))
 						)
 					),
 					context.factory.createElementAccessExpression(
@@ -585,6 +608,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	import_map?: ScopelessImportMap;
 
 	build_options: DumPackerBuildOpts;
+	hooks: DumPackerProjectHooks;
+	disable_imex: boolean;
 	constructor(opts: DumPackerProjectOpts) {
 		this.base_dir = path.relative('.', opts.base_dir);
 		this.name = opts.name;
@@ -611,52 +636,84 @@ export class DumPackerProject implements DumPackerProjectOpts {
 				this.build_options.watcher
 			);
 		}
+
+		this.disable_imex = opts.disable_imex ?? false;
+
+		this.hooks = {};
+		opts.project_hooks?.(this, this.hooks);
 	}
 
 	// template
 	private process_template() {
 		const raw = fs.readFileSync(this.page, { encoding: 'utf-8' });
-		switch (path.extname(this.page).toLowerCase()) {
+		const extname = path.extname(this.page).toLowerCase();
+		let res: string | undefined;
+		if (this.hooks.process_page && (res = this.hooks.process_page?.(extname, raw)) !== undefined) {
+			return res;
+		}
+		switch (extname) {
 			case '.pug':
-				return pug
+				res = pug
 					.compile(raw, {
 						pretty: true,
 					})()
 					.replace(new RegExp(/\t/g), '');
+				break;
 
 			case '.html':
 			default:
-				return raw;
+				res = raw;
+				break;
 		}
+		return res;
 	}
 
 	// style
 	private process_style(dom: jsdom.JSDOM) {
+		if (this.style === undefined) return;
 		for (const style of this.style) {
+			// get data and fire hook
+			// if hook returns false, cancel style
+			// if hook returns string, replace data
+			// if hook returns undefined, read data
+			let hooked: string | undefined | false = undefined;
+			let data: string;
+			hooked = this.hooks.process_style?.(style);
+			if (hooked === false) {
+				console.log(`BUILD\tcancelled style '${style}'`);
+				continue;
+			} else if (hooked) data = hooked;
+			else data = fs.readFileSync(style, { encoding: 'utf-8' });
+
 			// append style bucket to head
 			dom.window.document.head.appendChild(
 				(() => {
 					// read scss/sass, compile
-					const style_string = (() => {
-						let res = fs.readFileSync(style, { encoding: 'utf-8' });
-						const opts: sass.StringOptions<'sync'> = {
-							style: this.build_options.minify ? 'compressed' : 'expanded',
-							syntax: 'scss',
-							url: new URL(`file://${path.resolve(style)}`),
-						};
-						switch (path.extname(style).toLocaleLowerCase()) {
-							case '.sass':
-								opts.syntax = 'indented';
-							// fallthrough
-							case '.scss':
-								res = sass.compileString(res, opts).css.trim();
-								break;
+					// if hook returned string, use raw data
+					// if hook returned undefined, process data
+					const style_string =
+						hooked === undefined
+							? (() => {
+									let res: string = data;
+									const opts: sass.StringOptions<'sync'> = {
+										style: this.build_options.minify ? 'compressed' : 'expanded',
+										syntax: 'scss',
+										url: new URL(`file://${path.resolve(style)}`),
+									};
+									switch (path.extname(style).toLocaleLowerCase()) {
+										case '.sass':
+											opts.syntax = 'indented';
+										// fallthrough
+										case '.scss':
+											res = sass.compileString(res, opts).css.trim();
+											break;
 
-							default:
-								break;
-						}
-						return res.trim();
-					})();
+										default:
+											break;
+									}
+									return res.trim();
+								})()
+							: data;
 
 					// create style bucket, fill
 					const bucket = dom.window.document.createElement('style');
@@ -680,25 +737,45 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			path.basename(source_path)
 		);
 
+		// if hook returns false, cancel style
+		// if hook returns string, replace data
+		// if hook returns undefined, read data
+		let hooked: string | undefined | false = undefined;
+		let data: string;
+		hooked = this.hooks.process_code?.(export_module, source_path);
+		if (hooked === false) {
+			console.log(`BUILD\tcancelled code '${source_path}'`);
+			return undefined;
+		} else if (hooked) data = hooked;
+		else data = fs.readFileSync(source_path, { encoding: 'utf-8' });
+
 		// transpile code
-		const code_js: string = (() => {
-			const raw = fs.readFileSync(source_path, { encoding: 'utf-8' });
-			const ext = path.extname(source_path).toLocaleLowerCase();
-			switch (ext) {
-				case '.ts':
-					return ts.transpileModule(raw, {
-						moduleName: path.basename(export_module),
-						compilerOptions: {
-							target: ts.ScriptTarget.ESNext,
-							module: ts.ModuleKind.ESNext,
-						},
-					}).outputText;
+		// if hook returned string, skip transpile
+		// if hook returned undefined, transpile data
+		const code_js: string =
+			hooked === undefined
+				? (() => {
+						const raw = data;
+						const ext = path.extname(source_path).toLocaleLowerCase();
+						switch (ext) {
+							case '.ts':
+								return ts.transpileModule(raw, {
+									moduleName: path.basename(export_module),
+									compilerOptions: {
+										target: ts.ScriptTarget.ESNext,
+										module: ts.ModuleKind.ESNext,
+									},
+								}).outputText;
 
-				default:
-					return raw;
-			}
-		})();
+							default:
+								return raw;
+						}
+					})()
+				: data;
 
+		if (this.disable_imex) return code_js;
+
+		// process imex transform
 		const new_source = do_imex_transform(
 			this.base_dir,
 			this.import_map,
@@ -706,10 +783,11 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			ts.createSourceFile(source_path, code_js, ts.ScriptTarget.Latest, false, ts.ScriptKind.JS)
 		);
 
+		if (new_source === undefined) throw new Error(`Translation error: ${source_path}`);
 		const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
 		return printer.printNode(ts.EmitHint.Unspecified, new_source, new_source);
 	}
-	private process_code(dom: jsdom.JSDOM) {
+	private async process_code(dom: jsdom.JSDOM) {
 		// add import map to dom
 		if (this.import_map) {
 			dom.window.document.body.appendChild(
@@ -726,15 +804,16 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		if (this.code == undefined) return;
 
 		// add dum module (IMEX) code to dom
-		dom.window.document.body.appendChild(
-			(() => {
-				const bucket = dom.window.document.createElement('script');
-				bucket.setAttribute('__dum_code', 'IMEX');
-				bucket.innerHTML = `\n${IMEX_RAW}\n`;
-				// bucket.type = 'module';
-				return bucket;
-			})()
-		);
+		if (!this.disable_imex)
+			dom.window.document.body.appendChild(
+				(() => {
+					const bucket = dom.window.document.createElement('script');
+					bucket.setAttribute('__dum_code', 'IMEX');
+					bucket.innerHTML = `\n${IMEX_RAW}\n`;
+					// bucket.type = 'module';
+					return bucket;
+				})()
+			);
 
 		// find dependencies list
 		const dep_list = new SetList<string>();
@@ -756,9 +835,15 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		// process and add code, starting at last dependency
 		for (const source_file of dep_list) {
 			// translate the code
-			const code_result = this.translate_code(source_file);
+			let code_result = this.translate_code(source_file);
+
 			// if skippable (.ts files only exporting types)
 			if (code_result == undefined) continue;
+
+			// do code specific minify
+			if (this.build_options.minify) {
+				code_result = (await esbuild.transform(code_result, { minify: true })).code;
+			}
 
 			// add modularized code to dom
 			// dom_prepend_child(
@@ -781,13 +866,17 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 	public async build(): Promise<string> {
 		console.log(`BUILD\tstarting\t'${this.name}'`);
+		if (this.hooks.build_start?.() === false) {
+			console.log('BUILD\tcancelled at start');
+			return '';
+		}
 
 		// create new pseudo-dom from html
 		const dom = new jsdom.JSDOM(this.process_template());
 		if (this.style) this.process_style(dom);
 
 		// do hot reload
-		if (this.build_options?.server?.hot_reload) {
+		if (this.build_options.server?.hot_reload) {
 			// get server's socket io
 			dom.window.document.head.appendChild(
 				(() => {
@@ -805,7 +894,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					bucket.setAttribute('__dum_code', 'HR');
 					bucket.innerHTML =
 						'\n' +
-						HOT_RELOAD_RAW.replace('$HOST', this.build_options.server.hostname)
+						HOT_RELOAD_RAW.replace('$HOST', this.build_options.server?.hostname || '')
 							.replace('$PORT', `${this.build_options.server.port}`)
 							.trim() +
 						'\n';
@@ -815,9 +904,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		}
 
 		// process code
-		if (this.code) this.process_code(dom);
+		if (this.code) await this.process_code(dom);
 
 		// rasterize dom
+		if (this.hooks.before_rasterize?.(dom) === false) {
+			console.log('BUILD\tcancelled before rasterization');
+			return '';
+		}
 		let html_string = dom.serialize();
 		const html_file = `${this.name}.html`;
 
@@ -867,6 +960,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		fs.writeFileSync(html_file, html_string);
 		console.log(`BUILD\tsucceeded\t'${html_file}'\t${html_string.length / 1024}kb`);
+		this.hooks.build_done?.();
 		return html_string;
 	}
 
@@ -874,91 +968,95 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		let last_build = await this.build();
 		let is_building: boolean = false;
 
-		const init_watcher = (serv?: ServerState) => {
-			const watcher = watch(this.base_dir, { recursive: true }, async () => {
+		// function init_watcher(server: http.Server): void;
+		// function init_watcher(server: http.Server, ssock: socketio.Server, state: HRState): void;
+		const init_watcher = (server: http.Server, ssock?: socketio.Server, state?: HRState) => {
+			const target_dir = (ssock && this.build_options.watcher?.watcher_dir) || this.base_dir;
+
+			const watcher = watch.default(target_dir, { recursive: true }, async (ev, target) => {
 				if (!is_building) {
 					is_building = true;
-					last_build = await this.build();
-					if (serv && this.build_options.server.hot_reload) {
-						serv.hr_state.version += 1;
-						serv.ssock.emit('reload');
+					if (this.hooks.on_watch?.(ev, target) === false) {
+						console.log('WATCH\tcancelled');
+					} else {
+						last_build = await this.build();
+						if (ssock && state) {
+							state.version += 1;
+							ssock.emit('reload');
+						}
 					}
 					is_building = false;
 				}
 			});
-			console.log(`WATCH\t${path.resolve(__dirname, this.base_dir)}`);
+			console.log(`WATCH\t${path.resolve(target_dir)}`);
 			return watcher;
 		};
 
 		// server
-		const server_state: ServerState | undefined = this.build_options?.server
-			? (() => {
-					// server state
-					const local_state: ServerState = {
-						server: http.createServer((req, res) => {
-							const url = new URL(req.url, `http://${req.headers.host}`);
+		if (this.build_options.server) {
+			const host = this.build_options.server.hostname ?? DEFAULT_HOST;
+			const port = this.build_options.server.port ?? DEFAULT_PORT;
+			const dir = this.build_options.server.server_dir ?? '.';
+			const server = http.createServer((req, res) => {
+				res;
+				const url = req.url ?? '';
+				const url_path = new URL(req.url ?? '', `http://${req.headers.host}`);
 
-							const target_path =
-								url.pathname == '/'
-									? `${this.name}.html`
-									: path.join(this.build_options.server.server_dir, req.url);
+				const target_path = url_path.pathname == '/' ? `${this.name}.html` : path.resolve(dir, url);
 
-							const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
-							fs.readFile(target_path, (err, data) => {
-								if (err) {
-									// If the file is not found, send a 404 response
-									console.log(`SERVE\t${content_type}\t404\t${url.toString()}`);
-									res.writeHead(404, { 'Content-Type': 'text/plain' });
-									res.end('File not found');
-								} else {
-									console.log(`SERVE\t${content_type}\t200\t${url.toString()}`);
-									res.writeHead(200, { 'Content-Type': content_type });
-									res.end(data);
-								}
-							});
-						}),
+				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
+
+				if (this.hooks.on_serve?.(res) === false) return;
+				fs.readFile(target_path, (err, data) => {
+					if (err) {
+						// If the file is not found, send a 404 response
+						console.log(`SERVE\t${content_type}\t404\t${url_path.toString()}`);
+						res.writeHead(404, { 'Content-Type': 'text/plain' });
+						res.end('File not found');
+					} else {
+						console.log(`SERVE\t${content_type}\t200\t${url_path.toString()}`);
+						res.writeHead(200, { 'Content-Type': content_type });
+						res.end(data);
+					}
+				});
+			});
+
+			// hr hooks
+			let watcher: watch.Watcher | undefined = undefined;
+			if (this.build_options.watcher) {
+				if (this.build_options.server.hot_reload) {
+					const ssock = new socketio.Server(server);
+					const hr_state: HRState = {
+						session: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+						version: 0,
 					};
 
-					if (this.build_options.server.hot_reload) {
-						local_state.hr_state = {
-							session: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-							version: 0,
-						};
-
-						local_state.ssock = new socketio.Server(local_state.server);
-						local_state.ssock.on('connection', (sock) => {
-							sock.on('polling', (session, version) => {
-								if (
-									!(
-										session == local_state.hr_state.session &&
-										version == local_state.hr_state.version
-									)
-								)
-									sock.emit('reload');
-							});
-
-							sock.emit('init', local_state.hr_state.session, local_state.hr_state.version);
+					ssock.on('connection', (sock) => {
+						sock.on('polling', (session, version) => {
+							if (!(session == hr_state.session && version == hr_state.version))
+								sock.emit('reload');
 						});
-					}
 
-					// server listen
-					local_state.server.listen(
-						this.build_options.server.port,
-						this.build_options.server.hostname,
-						() => {
-							console.log(
-								`SERVE\thttp://${this.build_options.server.hostname}:${this.build_options.server.port}/\n`
-							);
-						}
-					);
-					return local_state;
-				})()
-			: undefined;
+						sock.emit('init', hr_state.session, hr_state.version);
+					});
 
-		// watcher w/ no state
-		if (this.build_options?.watcher) {
-			init_watcher(server_state);
-			console.log(`HR\t${this.build_options?.server?.hot_reload ? 'enabled' : 'disabled'}`);
+					watcher = init_watcher(server, ssock, hr_state);
+					console.log(`HR\t${this.build_options.server?.hot_reload ? 'enabled' : 'disabled'}`);
+				}
+			}
+
+			// server listen
+			server.listen(port, host, () => {
+				console.log(`SERVE\thttp://${host}:${port}/\n`);
+			});
+			return new Promise<string>((res) => {
+				process.on('SIGINT', function () {
+					console.log('Exiting...');
+					watcher?.close();
+					server.close();
+					res(last_build);
+				});
+			});
 		}
 
 		return last_build;
