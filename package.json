@@ -35,7 +35,7 @@
     ],
 
     "scripts": {
-        "link": "npm install && npm run build && npm link .",
+        "link": "npm run build && npm link .",
         "build": "tsx build.ts --clean"
     },
 
