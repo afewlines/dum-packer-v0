@@ -51,7 +51,7 @@ interface DumPackerProjectHooks {
 	build_done?: () => void;
 
 	on_watch?: (event: 'update' | 'remove', file_path: string) => boolean;
-	on_serve?: (res: http.ServerResponse) => boolean | string;
+	on_serve?: (req: http.IncomingMessage, res: http.ServerResponse) => boolean | string;
 
 	/**
 	 * hook for processing page
@@ -998,19 +998,19 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const port = this.build_options.server.port ?? DEFAULT_PORT;
 			const dir = this.build_options.server.server_dir ?? '.';
 			const server = http.createServer((req, res) => {
-				const url = req.url ?? '';
-				const url_path = new URL(req.url ?? '', `http://${req.headers.host}`);
+				let url = req.url ?? '';
 
-				let target_path = url_path.pathname === '/' ? `${this.name}.html` : path.resolve(dir, url);
-
-				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
-
-				// if (this.hooks.on_serve?.(res) === false) return;
 				if (this.hooks.on_serve !== undefined) {
-					const hooked = this.hooks.on_serve(res);
-					if (typeof hooked === 'string') target_path = hooked;
+					const hooked = this.hooks.on_serve(req, res);
+					if (typeof hooked === 'string') url = hooked;
 					else if (!hooked) return;
 				}
+
+				const url_path = new URL(url, `http://${req.headers.host}`);
+				const target_path =
+					url_path.pathname === '/' ? `${this.name}.html` : path.resolve(dir, url);
+
+				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
 				fs.readFile(target_path, (err, data) => {
 					if (err) {
 						// If the file is not found, send a 404 response
