@@ -51,7 +51,7 @@ interface DumPackerProjectHooks {
 	build_done?: () => void;
 
 	on_watch?: (event: 'update' | 'remove', file_path: string) => boolean;
-	on_serve?: (res: http.ServerResponse) => boolean;
+	on_serve?: (res: http.ServerResponse) => boolean | string;
 
 	/**
 	 * hook for processing page
@@ -61,8 +61,8 @@ interface DumPackerProjectHooks {
 	 * @returns {undefined|string} undefined doesn't affect page, string used as final page
 	 */
 	process_page?: (ext: string, data: string) => undefined | string;
-	process_style?: (path: string) => undefined | string | false;
-	process_code?: (export_module: string, path: string) => undefined | string | false;
+	process_style?: (path: string) => undefined | string | boolean;
+	process_code?: (export_module: string, path: string) => undefined | string | boolean;
 
 	before_rasterize?: (dom: jsdom.JSDOM) => boolean;
 }
@@ -676,13 +676,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			// if hook returns false, cancel style
 			// if hook returns string, replace data
 			// if hook returns undefined, read data
-			let hooked: string | undefined | false = undefined;
+			let hooked: string | undefined | boolean = undefined;
 			let data: string;
 			hooked = this.hooks.process_style?.(style);
 			if (hooked === false) {
 				console.log(`BUILD\tcancelled style '${style}'`);
 				continue;
-			} else if (hooked) data = hooked;
+			} else if (typeof hooked === 'string') data = hooked;
 			else data = fs.readFileSync(style, { encoding: 'utf-8' });
 
 			// append style bucket to head
@@ -740,13 +740,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		// if hook returns false, cancel style
 		// if hook returns string, replace data
 		// if hook returns undefined, read data
-		let hooked: string | undefined | false = undefined;
+		let hooked: string | undefined | boolean = undefined;
 		let data: string;
 		hooked = this.hooks.process_code?.(export_module, source_path);
 		if (hooked === false) {
 			console.log(`BUILD\tcancelled code '${source_path}'`);
 			return undefined;
-		} else if (hooked) data = hooked;
+		} else if (typeof hooked === 'string') data = hooked;
 		else data = fs.readFileSync(source_path, { encoding: 'utf-8' });
 
 		// transpile code
@@ -998,15 +998,19 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const port = this.build_options.server.port ?? DEFAULT_PORT;
 			const dir = this.build_options.server.server_dir ?? '.';
 			const server = http.createServer((req, res) => {
-				res;
 				const url = req.url ?? '';
 				const url_path = new URL(req.url ?? '', `http://${req.headers.host}`);
 
-				const target_path = url_path.pathname == '/' ? `${this.name}.html` : path.resolve(dir, url);
+				let target_path = url_path.pathname === '/' ? `${this.name}.html` : path.resolve(dir, url);
 
 				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
 
-				if (this.hooks.on_serve?.(res) === false) return;
+				// if (this.hooks.on_serve?.(res) === false) return;
+				if (this.hooks.on_serve !== undefined) {
+					const hooked = this.hooks.on_serve(res);
+					if (typeof hooked === 'string') target_path = hooked;
+					else if (!hooked) return;
+				}
 				fs.readFile(target_path, (err, data) => {
 					if (err) {
 						// If the file is not found, send a 404 response
