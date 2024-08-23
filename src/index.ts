@@ -1007,8 +1007,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 				}
 
 				const url_path = new URL(url, `http://${req.headers.host}`);
-				const target_path =
-					url_path.pathname === '/' ? `${this.name}.html` : path.resolve(dir, url);
+				const target_path = url_path.pathname === '/' ? `${this.name}.html` : path.join(dir, url);
 
 				const content_type = dum_mime_type(path.extname(target_path).toLowerCase());
 				fs.readFile(target_path, (err, data) => {
