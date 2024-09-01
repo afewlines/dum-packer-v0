@@ -882,7 +882,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		// create new pseudo-dom from html
 		const dom = new jsdom.JSDOM(await this.process_template());
-		if (this.style) this.process_style(dom);
+		if (this.style) await this.process_style(dom);
 
 		// do hot reload
 		if (this.build_options.server?.hot_reload) {
@@ -969,7 +969,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		fs.writeFileSync(html_file, html_string);
 		console.log(`BUILD\tsucceeded\t'${html_file}'\t${html_string.length / 1024}kb`);
-		this.hooks.build_done?.();
+		await await_or_undefined(this.hooks.build_done?.());
 		return html_string;
 	}
 
@@ -1006,11 +1006,11 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const host = this.build_options.server.hostname ?? DEFAULT_HOST;
 			const port = this.build_options.server.port ?? DEFAULT_PORT;
 			const dir = this.build_options.server.server_dir ?? '.';
-			const server = http.createServer((req, res) => {
+			const server = http.createServer(async (req, res) => {
 				let url = req.url ?? '';
 
 				if (this.hooks.on_serve !== undefined) {
-					const hooked = this.hooks.on_serve(req, res);
+					const hooked = await await_or_undefined(this.hooks.on_serve(req, res));
 					if (typeof hooked === 'string') url = hooked;
 					else if (!hooked) return;
 				}
