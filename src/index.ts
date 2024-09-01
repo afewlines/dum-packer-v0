@@ -46,26 +46,28 @@ export interface DumPackerBuildOpts {
 }
 
 // for hooks that return a boolean, false stops standard execution
-interface DumPackerProjectHooks {
-	build_start?: () => boolean;
-	build_done?: () => void;
 
-	on_watch?: (event: 'update' | 'remove', file_path: string) => boolean;
-	on_serve?: (req: http.IncomingMessage, res: http.ServerResponse) => boolean | string;
+interface DumPackerProjectHooks {
+	build_start?: () => Promise<boolean>;
+	build_done?: () => Promise<void>;
+
+	on_watch?: (event: 'update' | 'remove', file_path: string) => Promise<boolean>;
+	on_serve?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean | string>;
+	on_rasterize?: (dom: jsdom.JSDOM) => Promise<boolean>;
 
 	/**
 	 * hook for processing page
+	 * @async
 	 * @param {DumPackerProject} proj Project object
 	 * @param {string} ext File extension of project's page
 	 * @param {string} data Page file's data
-	 * @returns {undefined|string} undefined doesn't affect page, string used as final page
+	 * @returns {Promise<undefined|string>} undefined doesn't affect page, string used as final page
 	 */
-	process_page?: (ext: string, data: string) => undefined | string;
-	process_style?: (path: string) => undefined | string | boolean;
-	process_code?: (export_module: string, path: string) => undefined | string | boolean;
-
-	before_rasterize?: (dom: jsdom.JSDOM) => boolean;
+	process_page?: (ext: string, data: string) => Promise<undefined | string>;
+	process_style?: (path: string) => Promise<undefined | string | boolean>;
+	process_code?: (export_module: string, path: string) => Promise<undefined | string | boolean>;
 }
+
 export interface DumPackerProjectOpts {
 	/** name of the project & output.html */
 	name: string;
@@ -93,7 +95,7 @@ export interface DumPackerProjectOpts {
 	disable_imex?: boolean;
 
 	/** hooks function */
-	project_hooks?: (proj: DumPackerProject, hooks: DumPackerProjectHooks) => void;
+	project_hooks?: DumPackerProjectHooks;
 }
 
 class SetList<T> extends Array<T> {
@@ -291,6 +293,11 @@ function clean_module_source(base_dir: string, requester: string, module_source:
 	new_path = new_path.replaceAll(path.win32.sep, '/');
 
 	return new_path;
+}
+/** return optional promise as a promise */
+async function await_or_undefined<R>(target: undefined | Promise<R>): Promise<undefined | R> {
+	if (target === undefined) return undefined;
+	return await target;
 }
 
 // transformers
@@ -639,16 +646,18 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 		this.disable_imex = opts.disable_imex ?? false;
 
-		this.hooks = {};
-		opts.project_hooks?.(this, this.hooks);
+		this.hooks = opts.project_hooks ?? {};
 	}
 
 	// template
-	private process_template() {
+	private async process_template() {
 		const raw = fs.readFileSync(this.page, { encoding: 'utf-8' });
 		const extname = path.extname(this.page).toLowerCase();
 		let res: string | undefined;
-		if (this.hooks.process_page && (res = this.hooks.process_page?.(extname, raw)) !== undefined) {
+		if (
+			this.hooks.process_page &&
+			(res = await await_or_undefined(this.hooks.process_page?.(extname, raw))) !== undefined
+		) {
 			return res;
 		}
 		switch (extname) {
@@ -669,7 +678,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	}
 
 	// style
-	private process_style(dom: jsdom.JSDOM) {
+	private async process_style(dom: jsdom.JSDOM) {
 		if (this.style === undefined) return;
 		for (const style of this.style) {
 			// get data and fire hook
@@ -678,7 +687,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			// if hook returns undefined, read data
 			let hooked: string | undefined | boolean = undefined;
 			let data: string;
-			hooked = this.hooks.process_style?.(style);
+			hooked = await await_or_undefined(this.hooks.process_style?.(style));
 			if (hooked === false) {
 				console.log(`BUILD\tcancelled style '${style}'`);
 				continue;
@@ -728,7 +737,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 	}
 
 	// code
-	private translate_code(source_path: string): string | undefined {
+	private async translate_code(source_path: string): Promise<string | undefined> {
 		// get source file as path and module name
 		source_path = path.normalize(source_path);
 		const export_module = clean_module_source(
@@ -742,7 +751,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		// if hook returns undefined, read data
 		let hooked: string | undefined | boolean = undefined;
 		let data: string;
-		hooked = this.hooks.process_code?.(export_module, source_path);
+		hooked = await await_or_undefined(this.hooks.process_code?.(export_module, source_path));
 		if (hooked === false) {
 			console.log(`BUILD\tcancelled code '${source_path}'`);
 			return undefined;
@@ -835,7 +844,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		// process and add code, starting at last dependency
 		for (const source_file of dep_list) {
 			// translate the code
-			let code_result = this.translate_code(source_file);
+			let code_result = await this.translate_code(source_file);
 
 			// if skippable (.ts files only exporting types)
 			if (code_result == undefined) continue;
@@ -866,13 +875,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 
 	public async build(): Promise<string> {
 		console.log(`BUILD\tstarting\t'${this.name}'`);
-		if (this.hooks.build_start?.() === false) {
+		if ((await await_or_undefined(this.hooks.build_start?.())) === false) {
 			console.log('BUILD\tcancelled at start');
 			return '';
 		}
 
 		// create new pseudo-dom from html
-		const dom = new jsdom.JSDOM(this.process_template());
+		const dom = new jsdom.JSDOM(await this.process_template());
 		if (this.style) this.process_style(dom);
 
 		// do hot reload
@@ -907,7 +916,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		if (this.code) await this.process_code(dom);
 
 		// rasterize dom
-		if (this.hooks.before_rasterize?.(dom) === false) {
+		if ((await await_or_undefined(this.hooks.on_rasterize?.(dom))) === false) {
 			console.log('BUILD\tcancelled before rasterization');
 			return '';
 		}
@@ -976,7 +985,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			const watcher = watch.default(target_dir, { recursive: true }, async (ev, target) => {
 				if (!is_building) {
 					is_building = true;
-					if (this.hooks.on_watch?.(ev, target) === false) {
+					if ((await await_or_undefined(this.hooks.on_watch?.(ev, target))) === false) {
 						console.log('WATCH\tcancelled');
 					} else {
 						last_build = await this.build();
