@@ -1,5 +1,5 @@
 /* eslint-disable no-undef */
-const socket = io('http://$HOST:$PORT');
+const socket = io(location.origin);
 const stat = { session: -1, version: -1 };
 
 socket.on('init', (session, version) => {

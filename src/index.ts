@@ -649,6 +649,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		this.hooks = opts.project_hooks ?? {};
 	}
 
+	private get production(): boolean {
+		return (
+			this.build_options.minify !== undefined && // minify enabled
+			this.build_options.server?.hot_reload === undefined // no hot reload
+		);
+	}
+
 	// template
 	private async process_template() {
 		const raw = fs.readFileSync(this.page, { encoding: 'utf-8' });
@@ -727,7 +734,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					// create style bucket, fill
 					const bucket = dom.window.document.createElement('style');
 
-					bucket.setAttribute('__dum_style', clean_module_source(this.base_dir, '', style));
+					if (!this.production)
+						bucket.setAttribute('__dum_style', clean_module_source(this.base_dir, '', style));
 
 					bucket.innerHTML = `\n${style_string}\n`;
 					return bucket;
@@ -802,7 +810,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			dom.window.document.body.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.setAttribute('__dum_code', 'IMPORT_MAP');
+					if (!this.production) bucket.setAttribute('__dum_code', 'IMPORT_MAP');
 					bucket.type = 'importmap';
 					bucket.innerHTML = `\n${JSON.stringify({ imports: this.import_map }, undefined, this.build_options.minify ? undefined : 4)}\n`;
 					return bucket;
@@ -817,7 +825,7 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			dom.window.document.body.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.setAttribute('__dum_code', 'IMEX');
+					if (!this.production) bucket.setAttribute('__dum_code', 'IMEX');
 					bucket.innerHTML = `\n${IMEX_RAW}\n`;
 					// bucket.type = 'module';
 					return bucket;
@@ -862,8 +870,13 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					bucket.type = 'module';
 
 					//
-					bucket.setAttribute('__dum_module', clean_module_source(this.base_dir, '', source_file));
-					bucket.setAttribute('__dum_module_source', path.relative(this.base_dir, source_file));
+					if (!this.production)
+						bucket.setAttribute(
+							'__dum_module',
+							clean_module_source(this.base_dir, '', source_file)
+						);
+					if (!this.production)
+						bucket.setAttribute('__dum_module_source', path.relative(this.base_dir, source_file));
 
 					//
 					bucket.innerHTML = `\n${code_result}\n`;
@@ -890,8 +903,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			dom.window.document.head.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.setAttribute('__dum_code', 'HR_SOCKETIO');
-					bucket.src = `http://${this.build_options.server.hostname}:${this.build_options.server.port}/socket.io/socket.io.js`;
+					if (!this.production) bucket.setAttribute('__dum_code', 'HR_SOCKETIO');
+					bucket.src = `./socket.io/socket.io.js`;
 					return bucket;
 				})()
 			);
@@ -900,13 +913,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 			dom.window.document.body.appendChild(
 				(() => {
 					const bucket = dom.window.document.createElement('script');
-					bucket.setAttribute('__dum_code', 'HR');
-					bucket.innerHTML =
-						'\n' +
-						HOT_RELOAD_RAW.replace('$HOST', this.build_options.server?.hostname || '')
-							.replace('$PORT', `${this.build_options.server.port}`)
-							.trim() +
-						'\n';
+					if (!this.production) bucket.setAttribute('__dum_code', 'HR');
+					bucket.innerHTML = `\n${HOT_RELOAD_RAW.trim()}\n`;
 					return bucket;
 				})()
 			);
