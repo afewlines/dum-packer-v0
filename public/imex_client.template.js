@@ -1,3 +1,5 @@
+// Copyright 2024 Brad Soellner
+// SPDX-License-Identifier: Apache-2.0
 const __dum_scope = {};
 
 function __dum_export(m, k, value) {

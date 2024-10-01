@@ -1,3 +1,6 @@
+// Copyright 2024 Brad Soellner
+// SPDX-License-Identifier: Apache-2.0
+
 /* eslint-disable no-undef */
 const socket = io(location.origin);
 const stat = { session: -1, version: -1 };

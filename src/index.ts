@@ -1,3 +1,6 @@
+// Copyright 2024 Brad Soellner
+// SPDX-License-Identifier: Apache-2.0
+
 import * as dt from 'dependency-tree';
 import * as esbuild from 'esbuild';
 import * as fs from 'fs';

@@ -3,12 +3,8 @@
     "version": "0.1.8",
     "description": "Simple Web Project Packer",
     "author": "brad, seeker",
-    "license": "ISC",
-    "homepage": "https://github.com/afewlines/dum-packer#readme",
-    "repository": "github:afewlines/dum-packer",
-    "bugs": {
-        "url": "https://github.com/afewlines/dum-packer/issues"
-    },
+    "license": "Apache-2.0",
+    "repository": "github:afewlines/dum-packer-v0",
     "keywords": [
         "bundler",
         "modules",
