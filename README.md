@@ -1,15 +1,34 @@
-# dum-packer
+# dum-packer v0
 
-A dumb way to pack a web application into a daft little bundle.
+> "_Only a dum-packer would know._" - K. Krule, 2017
 
-This package is designed to bundle parts of a web-based project into a single HTML file that is readable and straight-forward. Effectively, it just slots your HTML/code/styling into their respective areas.
+A dum way to pack a web application into a daft little bundle.
+
+This system is designed to bundle parts of a web-based project into a single HTML file that is readable and straight-forward. Effectively, it just slots your HTML/code/styling into their respective areas.
+
+**Looking for a dum web framework?** Let me introduce you to my friend, [dum-dom](http://github.com/afewlines/dum-dom-v0).
+
+**This repository is still way deep in development. Anything and everything is liable to change depending on my wants and whims.**
 
 ## Features
 
-- Single file output
-- Automatic translation to HTML/CSS/JS
-- Minification & formatting/beautifier
-- Development server/hot reload
+- **Single-file Output:** Code feeling lonely and detached from its loved ones? Worry not; all code rendered unto dum-packer will be spat back out within the confines of a single html file.
+- **No-setup Translation:** Tired of html files just not speakin' your language? Wish you could develop a simple webpage with Pug, TypeScript, and SCSS without setting up a whole build system? At last, a packer that can understands _you_!
+- **Minification & Beautification:** I just... it's so annoying to have to set up half-a-dozen packages when I just want to make a simple web page.
+- **Development Server & Hot Reload:** Develop like the wind with our built-in development server with hot reload capabilities. I'm bored of rewriting this readme so TODO continue here some other time.
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Supported Languages](#supported-languages)
+  - [Markdown/Templates](#markdowntemplates)
+  - [Styling](#styling)
+  - [Code](#code)
+- [Caveats](#caveats)
+- [Usage](#usage)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Supported Languages
 
@@ -30,7 +49,7 @@ This package is designed to bundle parts of a web-based project into a single HT
 
 ## Caveats
 
-- If you decide to use this, remember that it's dumb.
+- If you decide to use this, remember that it's dum.
 - Use ESM, don't use `default` exports.
 - No contents from `node_modules` will be bundled in the project.
   - Import from a CDN & use the import map option for external modules when possible.
@@ -41,13 +60,15 @@ This package is designed to bundle parts of a web-based project into a single HT
 
 Dumb simple: import the `DumPackerProject` class, instantiate it with your project's options, call `.run()` or `.build()`, and you're golden.
 
-Module resolution at runtime is handled by dum-imex. Any import or export calls will be converted to `__dum_import` and `__dum_export` calls. A global object, `__dum_scope`, is used to hold exported items. Defaults and side-effect imports will be omitted.
+Module resolution at runtime is handled by dum-imex. Any import or export calls will be converted to `__dum_import` and `__dum_export` calls. A global object, `__dum_scope`, is used to hold exported items. Defaults and side-effect imports will be omitted. To disable dum-imex, set `disable_imex` to `false` in the project's options.
 
 The packer will generate a dependency tree from files indicated in `code`, translate all `code` files and local dependencies, transform them into dum-imex format, toss'em in separate closures, then append them in separate `script` tags to the end of the document's body.
 
-Adding the comment `__dum_omit` will exclude the line from the output.
+Adding the comment `__dum_omit` will exclude a line from the output.
 
-Adding the comment `__dum_ignore` will prevent modification from the dum-imex transform.
+Adding the comment `__dum_ignore` will prevent the dum-imex transform from affecting a line.
+
+Setting `disable_imex` in the project's settings to `true` will skip the dum-imex system & its translation entirely. This is useful when integrating a bundler such as esbuild.
 
 ## Example
 
@@ -55,6 +76,7 @@ File structure
 
 ```
 root_dir/
+	public/
     src/
         index.pug
         index.ts
@@ -87,6 +109,8 @@ const project = new DumPackerProject({
 		package: 'CDN url',
 	},
 
+	disable_imex: false, // optional; disables dum-imex
+
 	build_options: {
 		// optional; minify.Options, minifies when not undefined
 		minify: {},
@@ -100,21 +124,28 @@ const project = new DumPackerProject({
 
 		// optional; any value besides undefined will serve project
 		server: {
-			hostname: 'localhost', // optional. default: localhost
+			hostname: '0.0.0.0', // optional. default: localhost
 			port: 5888, // optional. default: 5174
-			server_dir: 'src/', // optional; directory to serve. default: project.base_dir
+			server_dir: 'public/', // optional; directory to serve. default: project.base_dir
 			hot_reload: true, // optional; enable hot reload, requires watcher to be started
 		},
+	},
+
+	project_hooks: {
+		// will document eventually...
+		// general schema is that if you return `false` the build/response will be aborted, return `true` and everything continues normally
+		// for the `process_` hooks, if a string is returned it'll be used as the contents of the file indicated in the hook's params
+		// for the `on_serve` hook, returning a string sets the resolution path for the server request
 	},
 });
 
 // builds project, starts watcher/server
 // if neither set, just build synchronously
-project.run();
+await project.run();
 
-// to just build project (async)
+// to just build project
 // note that build options will be respected; if set to hot reload, related code will be inserted, but the watcher/server will not be run
-project.build();
+await project.build();
 
 // output: root_dir/dum-packer-example.html
 ```
@@ -123,27 +154,17 @@ project.build();
 
 I'll probably keep tinkering with this whenever I find things to tweak or features to add. I'll (try to) keep an eye on the repo, so you're encouraged to lodge any bugs/suggestions/complaints/comments/concerns there.
 
-(Same thing if there's any metadata for this package/repo that doesn't seem right; this is my first published package.)
+### Things that are likely:
 
-Things that are likely:
+- Option to determine where built project file goes (it doesn't feel necessary yet; this packer is dum)
 
-- Option to disable dum-imex system and/or closures
-  - Former will probably just be based on if it's needed or not
-- Option to determine where built project file goes (it doesn't feel necessary; this packer is dumb)
-- More options for ~~minification, server,~~ other obfuscated elements
-
-Things that are less likely, but not unlikely:
+### Things that are less likely, but not unlikely:
 
 - Loader system to allow for more supported languages
 - CLI tool
 
-Things that are unlikely:
-
-- Router/single-page application system (you probably want another packer if you're looking to do this)
-
-Things that, if I have my way, will not happen:
+### Things that, if I have my way, will not happen:
 
 - Default exports (get outta here with that)
 - Bundling modules in `node_modules`
 - Module systems besides ESM (unless covered via the loader system)
-- Any sort of meaningful testing
