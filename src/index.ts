@@ -988,10 +988,8 @@ export class DumPackerProject implements DumPackerProjectOpts {
 		let last_build = await this.build();
 		let is_building: boolean = false;
 
-		// function init_watcher(server: http.Server): void;
-		// function init_watcher(server: http.Server, ssock: socketio.Server, state: HRState): void;
-		const init_watcher = (server: http.Server, ssock?: socketio.Server, state?: HRState) => {
-			const target_dir = (ssock && this.build_options.watcher?.watcher_dir) || this.base_dir;
+		const init_watcher = (ssock?: socketio.Server, state?: HRState) => {
+			const target_dir = this.build_options.watcher?.watcher_dir || this.base_dir;
 
 			const watcher = watch.default(target_dir, { recursive: true }, async (ev, target) => {
 				if (!is_building) {
@@ -1063,9 +1061,9 @@ export class DumPackerProject implements DumPackerProjectOpts {
 						sock.emit('init', hr_state.session, hr_state.version);
 					});
 
-					watcher = init_watcher(server, ssock, hr_state);
-					console.log(`HR\t${this.build_options.server?.hot_reload ? 'enabled' : 'disabled'}`);
+					watcher = init_watcher(ssock, hr_state);
 				}
+				console.log(`HR\t${this.build_options.server?.hot_reload ? 'enabled' : 'disabled'}`);
 			}
 
 			// server listen
@@ -1077,6 +1075,15 @@ export class DumPackerProject implements DumPackerProjectOpts {
 					console.log('Exiting...');
 					watcher?.close();
 					server.close();
+					res(last_build);
+				});
+			});
+		} else if (this.build_options.watcher) {
+			const watcher = init_watcher();
+			return new Promise<string>((res) => {
+				process.on('SIGINT', function () {
+					console.log('Exiting...');
+					watcher.close();
 					res(last_build);
 				});
 			});
